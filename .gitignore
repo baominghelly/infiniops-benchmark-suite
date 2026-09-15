@@ -1,0 +1,21 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environments
+.venv/
+venv/
+.env
+
+# Build and editor artifacts
+build/
+dist/
+.idea/
+.vscode/
+
+# Benchmark outputs
+results/
+*.log
