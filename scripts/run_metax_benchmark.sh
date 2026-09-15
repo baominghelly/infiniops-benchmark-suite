@@ -11,6 +11,17 @@ fi
 run_date="${RUN_DATE:-$(date +%Y-%m-%d)}"
 tester="${TESTER:-baoming}"
 build_infiniops="${BUILD_INFINIOPS:-0}"
+dtypes_input="${DTYPES:-float16,float32,bfloat16}"
+read -r -a dtypes <<<"${dtypes_input//,/ }"
+for dtype in "${dtypes[@]}"; do
+  case "$dtype" in
+    float16|float32|bfloat16) ;;
+    *)
+      echo "invalid DTYPES entry: $dtype; expected float16, float32, or bfloat16" >&2
+      exit 2
+      ;;
+  esac
+done
 
 host_tools_root="${BENCHMARK_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 host_deployment_root="$(cd "$host_tools_root/.." && pwd)"
@@ -26,7 +37,7 @@ launcher_log="$output_host/benchmark-launcher.log"
 monitor_log="$output_host/benchmark-monitor.log"
 foreign_flag="$output_host/foreign-process.flag"
 done_file="$output_host/benchmark.done"
-csv_date="${run_date//-//}"
+csv_date="${CSV_DATE:-${run_date//-//}}"
 
 target_ops=abs,add,addmm,amax,amin,argmax,bitwise_and,bitwise_not,bitwise_or,bmm,cat,ceil,clamp,cos,cumsum,div,eq,exp,floor,gather,ge,gelu,gt,hardtanh,index_select,le,log,log_softmax,lt,matmul,maximum,mean,minimum,mm,mul,ne,neg,pow,reciprocal,relu,round,rsqrt,sigmoid,sign,silu,sin,softmax,sort,sqrt,sub,sum,tanh,topk
 decode_4k_ops="${METAX_DECODE_4K_OPS:-all}"
@@ -121,6 +132,7 @@ fi
   echo "infinirt_sha=$infinirt_sha"
   echo "metadata=$metadata"
   echo "build_infiniops=$build_infiniops"
+  echo "dtypes=$dtypes_input"
   echo "profiles=decode-4k(full),decode-8k(targeted),prefill-4k(targeted)"
   echo "decode_4k_ops=$decode_4k_ops"
   echo "decode_8k_ops=$decode_8k_ops"
@@ -173,15 +185,16 @@ monitor() {
 }
 
 run_profile() {
-  local profile="$1"
-  local selected_ops="${2:-}"
-  local output="$output_container/$profile"
+  local dtype="$1"
+  local profile="$2"
+  local selected_ops="${3:-}"
+  local output="$output_container/$dtype/$profile"
   local -a command=(
     python3 "$harness"
     --metadata "$metadata"
     --output-dir "$output"
     --device cuda
-    --dtype float16
+    --dtype "$dtype"
     --sha "$sha"
     --min-run-time 0.02
     --timeout 20
@@ -190,7 +203,7 @@ run_profile() {
     command+=(--ops "$selected_ops")
   fi
   {
-    echo "=== profile=$profile start=$(date --iso-8601=seconds) ==="
+    echo "=== dtype=$dtype profile=$profile start=$(date --iso-8601=seconds) ==="
     printf 'command='
     printf '%q ' "${command[@]}"
     echo
@@ -206,25 +219,40 @@ monitor >>"$monitor_log" 2>&1 &
 monitor_pid=$!
 
 exit_code=0
-run_profile decode-4k "$decode_4k_ops" || exit_code=$?
-if [[ "$exit_code" -eq 0 ]]; then
-  run_profile decode-8k "$decode_8k_ops" || exit_code=$?
-fi
-if [[ "$exit_code" -eq 0 ]]; then
-  run_profile prefill-4k "$prefill_4k_ops" || exit_code=$?
-fi
-if [[ "$exit_code" -eq 0 ]]; then
+exporter_sources=()
+for dtype in "${dtypes[@]}"; do
+  echo "=== dtype=$dtype start=$(date --iso-8601=seconds) ===" >>"$launcher_log"
+  run_profile "$dtype" decode-4k "$decode_4k_ops" || exit_code=$?
+  run_profile "$dtype" decode-8k "$decode_8k_ops" || exit_code=$?
+  run_profile "$dtype" prefill-4k "$prefill_4k_ops" || exit_code=$?
+  for profile in decode-4k decode-8k prefill-4k; do
+    result_path="$output_container/$dtype/$profile/results.json"
+    if docker exec "$container" test -f "$result_path"; then
+      exporter_sources+=("$result_path")
+    else
+      echo "missing_result=$result_path" | tee -a "$launcher_log"
+      exit_code=1
+    fi
+  done
+  echo "=== dtype=$dtype end=$(date --iso-8601=seconds) ===" >>"$launcher_log"
+done
+
+if [[ "${#exporter_sources[@]}" -gt 0 ]]; then
   docker exec "$container" python3 "$exporter" \
-    "$output_container/decode-4k/results.json" \
-    "$output_container/decode-8k/results.json" \
-    "$output_container/prefill-4k/results.json" \
+    "${exporter_sources[@]}" \
     --output "$output_container/infiniops-metax-c550.csv" \
     --diagnostics "$output_container/diagnostics.csv" \
     --report "$output_container/report.md" \
     --platform metax \
     --date "$csv_date" \
     --tester "$tester" 2>&1 | tee -a "$launcher_log"
-  exit_code=${PIPESTATUS[0]}
+  exporter_exit=${PIPESTATUS[0]}
+  if [[ "$exporter_exit" -ne 0 ]]; then
+    exit_code="$exporter_exit"
+  fi
+else
+  echo "no result JSON files were available for export" | tee -a "$launcher_log"
+  exit_code=1
 fi
 
 {

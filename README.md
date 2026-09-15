@@ -47,6 +47,28 @@ Platform-specific runners may require environment variables or arguments for
 the container name and physical device index. Inspect the runner header before
 using it on a new machine.
 
+The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
+dtypes in one invocation:
+
+```bash
+DTYPES=float16,float32,bfloat16 scripts/run_metax_benchmark.sh 0
+```
+
+Raw results are stored as:
+
+```text
+results/<date>/<dtype>/decode-4k/
+results/<date>/<dtype>/decode-8k/
+results/<date>/<dtype>/prefill-4k/
+```
+
+The runner then exports one combined CSV and diagnostics table at the date-root
+level. Rows are distinguished by their `dtype` column.
+
+`RUN_DATE` is also used as the output directory name. When it is a test label
+rather than a date, set `CSV_DATE` explicitly, for example
+`CSV_DATE=2026/09/15`.
+
 The general harness command is:
 
 ```bash
