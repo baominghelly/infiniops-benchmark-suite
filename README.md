@@ -63,6 +63,42 @@ that shared path rather than from a user's home directory. Keep the scripts tree
 read-only to benchmark callers; result files still belong under
 `/data-aisoft/infinibench_data/`.
 
+### Source update and backfill
+
+By default the runner prepares both source trees inside the container before
+compilation:
+
+```text
+/workspace/InfiniOps    -> https://github.com/InfiniTensor/InfiniOps.git
+/workspace/InfiniRT     -> https://github.com/InfiniTensor/InfiniRT.git
+```
+
+If a repository is absent, it is cloned with full history. If it already exists,
+the runner refuses to continue when the work tree is dirty, sets `origin` to the
+configured URL, fetches tags and branches, and fast-forwards the configured
+branch (`master` by default). The URL and branch can be overridden with
+`INFINIOPS_REPO_URL`, `INFINIRT_REPO_URL`, `INFINIOPS_BRANCH`, and
+`INFINIRT_BRANCH`. `UPDATE_SOURCES=0` skips this stage and requires both
+repositories to already exist.
+
+For a date backfill, set `BACKFILL_DATE=YYYY-MM-DD`. Both repositories select
+the last commit on their configured remote branch whose commit time is no later
+than 23:59:59 Asia/Shanghai on that date, check out that commit, and then build:
+
+```bash
+RUN_DATE=backfill-20260911 \
+CSV_DATE=2026/09/11 \
+BACKFILL_DATE=2026-09-11 \
+DTYPES=float16,float32,bfloat16 \
+PROFILES=decode-4k-small \
+/data-aisoft/infinibench-scripts/scripts/run_metax_benchmark.sh
+```
+
+For reproducible runs tied to exact tested revisions, set `INFINIOPS_REF` and/or
+`INFINIRT_REF` to a commit, tag, or branch. Explicit refs take precedence over
+`BACKFILL_DATE`; set both refs when a matched pair is required. The selected
+commits are recorded in `benchmark-launcher.log` and `benchmark.done`.
+
 The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
 dtypes in one invocation. It also accepts a comma-separated `PROFILES` list.
 Its workflow defaults are to compile InfiniOps, automatically choose the

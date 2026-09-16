@@ -13,6 +13,10 @@ gpu_rejected=""
 run_date="${RUN_DATE:-$(date +%Y-%m-%d)}"
 tester="${TESTER:-baoming}"
 build_infiniops="${BUILD_INFINIOPS:-1}"
+update_sources="${UPDATE_SOURCES:-1}"
+backfill_date="${BACKFILL_DATE:-}"
+infiniops_ref="${INFINIOPS_REF:-}"
+infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-metax-c550}"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
@@ -38,11 +42,33 @@ for profile in "${profiles[@]}"; do
   esac
 done
 
+case "$update_sources" in
+  0|1) ;;
+  *)
+    echo "invalid UPDATE_SOURCES: $update_sources; expected 0 or 1" >&2
+    exit 2
+    ;;
+esac
+if [[ -n "$backfill_date" ]]; then
+  if [[ ! "$backfill_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -d "$backfill_date" >/dev/null 2>&1; then
+    echo "invalid BACKFILL_DATE: $backfill_date; expected YYYY-MM-DD" >&2
+    exit 2
+  fi
+fi
+if [[ "$update_sources" != "1" && ( -n "$backfill_date" || -n "$infiniops_ref" || -n "$infinirt_ref" ) ]]; then
+  echo "UPDATE_SOURCES=0 cannot be combined with BACKFILL_DATE, INFINIOPS_REF, or INFINIRT_REF" >&2
+  exit 2
+fi
+
 host_tools_root="${BENCHMARK_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 output_host="$output_root/$device_id/$run_date"
 container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/data-aisoft/infinibench-scripts}"
 source_root="${INFINIOPS_SOURCE_ROOT:-/workspace/InfiniOps}"
 infinirt_source_root="${INFINIRT_SOURCE_ROOT:-/workspace/InfiniRT}"
+infiniops_repo_url="${INFINIOPS_REPO_URL:-https://github.com/InfiniTensor/InfiniOps.git}"
+infinirt_repo_url="${INFINIRT_REPO_URL:-https://github.com/InfiniTensor/InfiniRT.git}"
+infiniops_branch="${INFINIOPS_BRANCH:-master}"
+infinirt_branch="${INFINIRT_BRANCH:-master}"
 build_dir="${INFINIOPS_BUILD_DIR:-/workspace/.cache/infiniops-build}"
 cmake_build_parallel_level="${CMAKE_BUILD_PARALLEL_LEVEL:-64}"
 output_container_root="${CONTAINER_OUTPUT_ROOT:-$output_root}"
@@ -83,8 +109,6 @@ mkdir -p "$output_host"
 : >"$foreign_flag"
 : >"$done_file"
 
-docker exec "$container" test -d "$source_root"
-docker exec "$container" test -d "$infinirt_source_root"
 docker exec "$container" test -f "$harness"
 docker exec "$container" test -f "$exporter"
 
@@ -96,6 +120,110 @@ if ! docker exec "$container" test -f "$output_container/$output_path_marker"; t
   exit 2
 fi
 rm -f -- "$output_host/$output_path_marker"
+
+prepare_source_repo() {
+  local label="$1"
+  local path="$2"
+  local url="$3"
+  local branch="$4"
+  local requested_ref="$5"
+  local source_date="$6"
+  local cutoff requested_commit status_output resolved_ref
+
+  echo "=== source $label prepare start=$(date --iso-8601=seconds) ===" | tee -a "$launcher_log"
+  echo "repo=$url branch=$branch path=$path" | tee -a "$launcher_log"
+
+  if ! docker exec "$container" test -d "$path/.git"; then
+    if docker exec "$container" test -e "$path"; then
+      echo "$label source path exists but is not a Git repository: $path" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    echo "action=clone" | tee -a "$launcher_log"
+    if ! docker exec "$container" mkdir -p "$(dirname "$path")"; then
+      return 2
+    fi
+    if ! docker exec "$container" git clone --branch "$branch" "$url" "$path" 2>&1 | tee -a "$launcher_log"; then
+      echo "$label clone failed" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+  else
+    echo "action=fetch" | tee -a "$launcher_log"
+    if ! status_output="$(docker exec "$container" git -c "safe.directory=$path" -C "$path" status --porcelain=v1)"; then
+      printf '%s\n' "$status_output" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    if [[ -n "$status_output" ]]; then
+      echo "$label repository has local changes; refusing to overwrite:" | tee -a "$launcher_log" >&2
+      printf '%s\n' "$status_output" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" remote set-url origin "$url" 2>&1 | tee -a "$launcher_log"; then
+      return 2
+    fi
+    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" fetch --prune --tags origin 2>&1 | tee -a "$launcher_log"; then
+      return 2
+    fi
+  fi
+
+  if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    echo "$label remote branch not found: origin/$branch" | tee -a "$launcher_log" >&2
+    return 2
+  fi
+
+  if [[ -n "$requested_ref" ]]; then
+    echo "version=explicit ref=$requested_ref" | tee -a "$launcher_log"
+    if ! resolved_ref="$(docker exec "$container" git -c "safe.directory=$path" -C "$path" rev-parse --verify "$requested_ref^{commit}")"; then
+      echo "$label ref was not found after fetch: $requested_ref" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" checkout -q "$resolved_ref" 2>&1 | tee -a "$launcher_log"; then
+      return 2
+    fi
+  elif [[ -n "$source_date" ]]; then
+    cutoff="${source_date}T23:59:59+08:00"
+    echo "version=backfill date=$source_date cutoff=$cutoff" | tee -a "$launcher_log"
+    if ! requested_commit="$(docker exec "$container" git -c "safe.directory=$path" -C "$path" rev-list -1 --before="$cutoff" "refs/remotes/origin/$branch")"; then
+      echo "$label failed to resolve a commit before $cutoff" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    if [[ -z "$requested_commit" ]]; then
+      echo "no $label commit exists before $cutoff on origin/$branch" | tee -a "$launcher_log" >&2
+      return 2
+    fi
+    echo "$label selected_commit=$requested_commit" | tee -a "$launcher_log"
+    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" checkout -q "$requested_commit" 2>&1 | tee -a "$launcher_log"; then
+      return 2
+    fi
+  else
+    echo "version=latest" | tee -a "$launcher_log"
+    if docker exec "$container" git -c "safe.directory=$path" -C "$path" show-ref --verify --quiet "refs/heads/$branch"; then
+      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" checkout -q "$branch" 2>&1 | tee -a "$launcher_log"; then
+        return 2
+      fi
+      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" pull --ff-only origin "$branch" 2>&1 | tee -a "$launcher_log"; then
+        return 2
+      fi
+    else
+      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" checkout -q -b "$branch" "refs/remotes/origin/$branch" 2>&1 | tee -a "$launcher_log"; then
+        return 2
+      fi
+    fi
+  fi
+
+  echo "$label commit=$(docker exec "$container" git -c "safe.directory=$path" -C "$path" rev-parse HEAD)" | tee -a "$launcher_log"
+  echo "=== source $label prepare end=$(date --iso-8601=seconds) ===" | tee -a "$launcher_log"
+}
+
+if [[ "$update_sources" == "1" ]]; then
+  prepare_source_repo "InfiniOps" "$source_root" "$infiniops_repo_url" "$infiniops_branch" "$infiniops_ref" "$backfill_date"
+  prepare_source_repo "InfiniRT" "$infinirt_source_root" "$infinirt_repo_url" "$infinirt_branch" "$infinirt_ref" "$backfill_date"
+else
+  {
+    echo "source_update=disabled"
+    docker exec "$container" test -d "$source_root/.git"
+    docker exec "$container" test -d "$infinirt_source_root/.git"
+  } | tee -a "$launcher_log"
+fi
 
 select_idle_gpu() {
   local gpu_json process_table selection_output
@@ -298,6 +426,14 @@ fi
   echo "container_id=$container_id"
   echo "physical_gpu=$physical_gpu"
   echo "run_date=$run_date"
+  echo "source_update=$update_sources"
+  echo "source_backfill_date=$backfill_date"
+  echo "infiniops_repo=$infiniops_repo_url"
+  echo "infiniops_branch=$infiniops_branch"
+  echo "infiniops_requested_ref=$infiniops_ref"
+  echo "infinirt_repo=$infinirt_repo_url"
+  echo "infinirt_branch=$infinirt_branch"
+  echo "infinirt_requested_ref=$infinirt_ref"
   echo "source_root=$source_root"
   echo "sha=$sha"
   echo "infinirt_sha=$infinirt_sha"
@@ -448,6 +584,10 @@ fi
   echo "end=$(date --iso-8601=seconds)"
   echo "container=$container"
   echo "physical_gpu=$physical_gpu"
+  echo "source_update=$update_sources"
+  echo "source_backfill_date=$backfill_date"
+  echo "infiniops_requested_ref=$infiniops_ref"
+  echo "infinirt_requested_ref=$infinirt_ref"
   echo "sha=$sha"
   echo "infinirt_sha=$infinirt_sha"
 } >"$done_file"
