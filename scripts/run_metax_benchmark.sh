@@ -566,7 +566,7 @@ if total <= 0:
     raise SystemExit(f"MetaX GPU {sys.argv[1]} has invalid total memory")
 print(f"{(total - used) * 100.0 / total:.2f}")
 ' "$physical_gpu")"
-if [[ -z "$free_memory" || "$free_memory" =~ [^0-9.] ]] || python3 -c 'import sys; raise SystemExit(float(sys.argv[1]) < float(sys.argv[2]))' "$free_memory" "$gpu_min_free_memory"; then
+if [[ -z "$free_memory" || "$free_memory" =~ [^0-9.] ]] || python3 -c 'import sys; raise SystemExit(float(sys.argv[1]) >= float(sys.argv[2]))' "$free_memory" "$gpu_min_free_memory"; then
   echo "physical MetaX GPU $physical_gpu free memory is below ${gpu_min_free_memory}%: $free_memory" >&2
   exit 2
 fi
