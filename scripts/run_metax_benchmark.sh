@@ -24,6 +24,17 @@ for dtype in "${dtypes[@]}"; do
       ;;
   esac
 done
+profiles_input="${PROFILES:-decode-4k}"
+read -r -a profiles <<<"${profiles_input//,/ }"
+for profile in "${profiles[@]}"; do
+  case "$profile" in
+    decode-4k|decode-8k|prefill-4k) ;;
+    *)
+      echo "invalid PROFILES entry: $profile; expected decode-4k, decode-8k, or prefill-4k" >&2
+      exit 2
+      ;;
+  esac
+done
 
 host_tools_root="${BENCHMARK_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 output_host="$output_root/$device_id/$run_date"
@@ -134,7 +145,7 @@ fi
   echo "metadata=$metadata"
   echo "build_infiniops=$build_infiniops"
   echo "dtypes=$dtypes_input"
-  echo "profiles=decode-4k(full),decode-8k(targeted),prefill-4k(targeted)"
+  echo "profiles=$profiles_input"
   echo "decode_4k_ops=$decode_4k_ops"
   echo "decode_8k_ops=$decode_8k_ops"
   echo "prefill_4k_ops=$prefill_4k_ops"
@@ -223,10 +234,13 @@ exit_code=0
 exporter_sources=()
 for dtype in "${dtypes[@]}"; do
   echo "=== dtype=$dtype start=$(date --iso-8601=seconds) ===" >>"$launcher_log"
-  run_profile "$dtype" decode-4k "$decode_4k_ops" || exit_code=$?
-  run_profile "$dtype" decode-8k "$decode_8k_ops" || exit_code=$?
-  run_profile "$dtype" prefill-4k "$prefill_4k_ops" || exit_code=$?
-  for profile in decode-4k decode-8k prefill-4k; do
+  for profile in "${profiles[@]}"; do
+    case "$profile" in
+      decode-4k) selected_ops="$decode_4k_ops" ;;
+      decode-8k) selected_ops="$decode_8k_ops" ;;
+      prefill-4k) selected_ops="$prefill_4k_ops" ;;
+    esac
+    run_profile "$dtype" "$profile" "$selected_ops" || exit_code=$?
     result_path="$output_container/$dtype/$profile/results.json"
     if docker exec "$container" test -f "$result_path"; then
       exporter_sources+=("$result_path")

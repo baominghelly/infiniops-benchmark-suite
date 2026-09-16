@@ -48,11 +48,16 @@ the container name and physical device index. Inspect the runner header before
 using it on a new machine.
 
 The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
-dtypes in one invocation:
+dtypes in one invocation. It also accepts a comma-separated `PROFILES` list.
+The workflow defaults are three dtypes and one coverage profile:
 
 ```bash
-DTYPES=float16,float32,bfloat16 scripts/run_metax_benchmark.sh 0
+DTYPES=float16,float32,bfloat16 PROFILES=decode-4k scripts/run_metax_benchmark.sh 0
 ```
+
+Since every profile uses the same 495-operator set with a different shape,
+`decode-4k` alone is sufficient for operator-coverage runs. Add
+`decode-8k` or `prefill-4k` only when shape-specific performance is needed.
 
 Canonical raw and final results are written directly to:
 
