@@ -99,6 +99,10 @@ For reproducible runs tied to exact tested revisions, set `INFINIOPS_REF` and/or
 `BACKFILL_DATE`; set both refs when a matched pair is required. The selected
 commits are recorded in `benchmark-launcher.log` and `benchmark.done`.
 
+Because source backfill and compilation mutate shared container workspaces, the
+MetaX runner takes a machine-level lock. A second invocation on the same machine
+exits with code 2 instead of switching source versions under an active run.
+
 The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
 dtypes in one invocation. It also accepts a comma-separated `PROFILES` list.
 Its workflow defaults are to compile InfiniOps, automatically choose the

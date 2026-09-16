@@ -73,6 +73,8 @@ build_dir="${INFINIOPS_BUILD_DIR:-/workspace/.cache/infiniops-build}"
 cmake_build_parallel_level="${CMAKE_BUILD_PARALLEL_LEVEL:-64}"
 output_container_root="${CONTAINER_OUTPUT_ROOT:-$output_root}"
 output_container="$output_container_root/$device_id/$run_date"
+runner_lock="$output_root/$device_id/.infinibench-runner.lock"
+runner_lock_container="$output_container_root/$device_id/.infinibench-runner.lock"
 harness="$container_tools_root/scripts/full_operator_benchmark.py"
 exporter="$container_tools_root/scripts/export_full_operator_report.py"
 launcher_log="$output_host/benchmark-launcher.log"
@@ -97,6 +99,17 @@ if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; the
   exit 2
 fi
 container_id="$(docker inspect -f '{{.Id}}' "$container")"
+
+# Backfill changes shared source trees, so serialize all runner executions on
+# this machine. The lock is released automatically when this process exits.
+docker exec "$container" mkdir -p "$(dirname "$runner_lock_container")"
+docker exec "$container" touch "$runner_lock_container"
+docker exec "$container" chmod 0666 "$runner_lock_container"
+exec 9>"$runner_lock"
+if ! flock -n 9; then
+  echo "another MetaX benchmark runner is active: $runner_lock" >&2
+  exit 2
+fi
 
 # Create the run directory from the container so a shared frontend/agent
 # account does not need write permission on the parent NFS directory. The
