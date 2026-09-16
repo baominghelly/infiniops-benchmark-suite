@@ -28,9 +28,9 @@ profiles_input="${PROFILES:-decode-4k}"
 read -r -a profiles <<<"${profiles_input//,/ }"
 for profile in "${profiles[@]}"; do
   case "$profile" in
-    decode-4k|decode-8k|prefill-4k) ;;
+    decode-4k|decode-4k-small|decode-8k|prefill-4k) ;;
     *)
-      echo "invalid PROFILES entry: $profile; expected decode-4k, decode-8k, or prefill-4k" >&2
+      echo "invalid PROFILES entry: $profile; expected decode-4k, decode-4k-small, decode-8k, or prefill-4k" >&2
       exit 2
       ;;
   esac
@@ -52,7 +52,9 @@ done_file="$output_host/benchmark.done"
 csv_date="${CSV_DATE:-${run_date//-//}}"
 
 target_ops=abs,add,addmm,amax,amin,argmax,bitwise_and,bitwise_not,bitwise_or,bmm,cat,ceil,clamp,cos,cumsum,div,eq,exp,floor,gather,ge,gelu,gt,hardtanh,index_select,le,log,log_softmax,lt,matmul,maximum,mean,minimum,mm,mul,ne,neg,pow,reciprocal,relu,round,rsqrt,sigmoid,sign,silu,sin,softmax,sort,sqrt,sub,sum,tanh,topk
+small_ops=abs,add,avg_pool2d,bmm,gather,fft_fft,gelu,matmul,mm,mul,relu,sigmoid,silu,softmax,special_gammaln,sparse_sampled_addmm,sum,where
 decode_4k_ops="${METAX_DECODE_4K_OPS:-all}"
+decode_4k_small_ops="${METAX_DECODE_4K_SMALL_OPS:-$small_ops}"
 decode_8k_ops="${METAX_DECODE_8K_OPS:-$target_ops}"
 prefill_4k_ops="${METAX_PREFILL_4K_OPS:-$target_ops}"
 
@@ -147,6 +149,7 @@ fi
   echo "dtypes=$dtypes_input"
   echo "profiles=$profiles_input"
   echo "decode_4k_ops=$decode_4k_ops"
+  echo "decode_4k_small_ops=$decode_4k_small_ops"
   echo "decode_8k_ops=$decode_8k_ops"
   echo "prefill_4k_ops=$prefill_4k_ops"
   echo "=== host preflight ==="
@@ -237,6 +240,7 @@ for dtype in "${dtypes[@]}"; do
   for profile in "${profiles[@]}"; do
     case "$profile" in
       decode-4k) selected_ops="$decode_4k_ops" ;;
+      decode-4k-small) selected_ops="$decode_4k_small_ops" ;;
       decode-8k) selected_ops="$decode_8k_ops" ;;
       prefill-4k) selected_ops="$prefill_4k_ops" ;;
     esac

@@ -59,6 +59,16 @@ Since every profile uses the same 495-operator set with a different shape,
 `decode-4k` alone is sufficient for operator-coverage runs. Add
 `decode-8k` or `prefill-4k` only when shape-specific performance is needed.
 
+For development smoke runs, select the reduced profile:
+
+```bash
+PROFILES=decode-4k-small scripts/run_metax_benchmark.sh 0
+```
+
+`decode-4k-small` uses a `[1, 128]` default shape and an 18-operator
+representative set spanning all nine semantic categories. Override it with
+`METAX_DECODE_4K_SMALL_OPS` when needed.
+
 Canonical raw and final results are written directly to:
 
 ```text

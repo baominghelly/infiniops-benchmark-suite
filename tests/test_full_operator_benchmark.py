@@ -1,4 +1,6 @@
 import csv
+import importlib
+import os
 import json
 import tempfile
 import unittest
@@ -24,6 +26,7 @@ from scripts.full_operator_benchmark import (
     summarize_results,
     write_reports,
 )
+from scripts import full_operator_benchmark as _harness_module
 
 
 class FullOperatorBenchmarkTests(unittest.TestCase):
@@ -266,6 +269,24 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
         self.assertTrue(
             scalar_value("linalg_lu_solve", {"name": "left", "type": "bool"})
         )
+
+    def test_decode_4k_small_profile_uses_small_default_and_matrix_shapes(self):
+        with patch.dict(
+            os.environ,
+            {"INFINIOPS_BENCHMARK_PROFILE": "decode-4k-small"},
+            clear=True,
+        ):
+            module = importlib.reload(_harness_module)
+
+            try:
+                self.assertEqual(module._DEFAULT_SHAPE, [1, 128])
+                self.assertEqual(
+                    module._MATRIX_SHAPES["matmul"],
+                    [[1, 128], [128, 256]],
+                )
+            finally:
+                os.environ.pop("INFINIOPS_BENCHMARK_PROFILE", None)
+                importlib.reload(_harness_module)
 
     def test_worker_command_is_reproducible(self):
         command = build_worker_command(

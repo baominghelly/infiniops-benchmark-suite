@@ -85,6 +85,7 @@ RESULT_FIELDS = [
 _BENCHMARK_PROFILE = os.environ.get("INFINIOPS_BENCHMARK_PROFILE", "compact")
 _PROFILE_DEFAULT_SHAPES = {
     "compact": [8, 128],
+    "decode-4k-small": [1, 128],
     "decode-4k": [1, 4096],
     "decode-8k": [1, 8192],
     "prefill-4k": [8, 4096],
@@ -129,6 +130,14 @@ _MATRIX_SHAPES = {
 }
 
 _PROFILE_MATRIX_SHAPES = {
+    "decode-4k-small": {
+        "mm": [[1, 128], [128, 256]],
+        "matmul": [[1, 128], [128, 256]],
+        "linalg_matmul": [[1, 128], [128, 256]],
+        "addmm": [[1, 256], [1, 128], [128, 256]],
+        "_addmm_activation": [[1, 256], [1, 128], [128, 256]],
+        "linear": [[1, 128], [256, 128]],
+    },
     "decode-4k": {
         "mm": [[1, 4096], [4096, 11008]],
         "matmul": [[1, 4096], [4096, 11008]],
