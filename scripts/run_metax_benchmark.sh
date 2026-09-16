@@ -4,6 +4,9 @@ set -euo pipefail
 container="${CONTAINER:-baoming_infiniops_metax}"
 requested_gpu="${1:-${PHYSICAL_GPU:-}}"
 auto_select_gpu="${AUTO_SELECT_GPU:-1}"
+gpu_max_utilization="${GPU_MAX_UTILIZATION_PERCENT:-5}"
+gpu_min_free_memory="${GPU_MIN_FREE_MEMORY_PERCENT:-0}"
+gpu_allow_occupied="${GPU_ALLOW_OCCUPIED:-0}"
 physical_gpu=""
 gpu_selection=""
 gpu_candidates=""
@@ -40,6 +43,20 @@ for profile in "${profiles[@]}"; do
       exit 2
       ;;
   esac
+done
+
+case "$gpu_allow_occupied" in
+  0|1) ;;
+  *)
+    echo "invalid GPU_ALLOW_OCCUPIED: $gpu_allow_occupied; expected 0 or 1" >&2
+    exit 2
+    ;;
+esac
+for gpu_threshold in "$gpu_max_utilization" "$gpu_min_free_memory"; do
+  if [[ ! "$gpu_threshold" =~ ^[0-9]+$ ]] || (( gpu_threshold > 100 )); then
+    echo "invalid GPU threshold: $gpu_threshold; expected an integer between 0 and 100" >&2
+    exit 2
+  fi
 done
 
 if [[ -n "${RUN_DATE:-}" || -n "${CSV_DATE:-}" ]]; then
@@ -306,7 +323,7 @@ else
 fi
 
 select_idle_gpu() {
-  local gpu_json process_table selection_output
+  local gpu_json process_table memory_table selection_output
   if ! gpu_json="$(mx-smi -j 2>&1)"; then
     echo "mx-smi -j failed:" >&2
     printf '%s\n' "$gpu_json" >&2
@@ -317,21 +334,31 @@ select_idle_gpu() {
     printf '%s\n' "$process_table" >&2
     return 2
   fi
+  if ! memory_table="$(mx-smi --show-memory 2>&1)"; then
+    echo "mx-smi --show-memory failed:" >&2
+    printf '%s\n' "$memory_table" >&2
+    return 2
+  fi
 
   selection_output="$(
     {
       printf '%s\n' "$gpu_json"
       printf '\n__MX_SMI_PROCESS_TABLE__\n'
       printf '%s\n' "$process_table"
+      printf '\n__MX_SMI_MEMORY_TABLE__\n'
+      printf '%s\n' "$memory_table"
     } | python3 -c '
 import json
+import re
 import sys
 
 raw = sys.stdin.read()
-marker = "__MX_SMI_PROCESS_TABLE__"
-if marker not in raw:
-    raise SystemExit("mx-smi output did not contain the process-table marker")
-json_text, process_text = raw.split(marker, 1)
+process_marker = "__MX_SMI_PROCESS_TABLE__"
+memory_marker = "__MX_SMI_MEMORY_TABLE__"
+if process_marker not in raw or memory_marker not in raw:
+    raise SystemExit("mx-smi output did not contain the expected resource markers")
+json_text, resource_text = raw.split(process_marker, 1)
+process_text, memory_text = resource_text.split(memory_marker, 1)
 json_start = json_text.find("{")
 if json_start < 0:
     raise SystemExit("mx-smi -j output did not contain JSON")
@@ -350,6 +377,25 @@ for line in process_text.splitlines():
     if len(columns) >= 4 and columns[1].isdigit() and columns[2].isdigit():
         busy.add(int(columns[1]))
 
+memory = {}
+for match in re.finditer(
+    r"GPU#(\d+).*?vis_vram total\s*:\s*([0-9]+) KB.*?"
+    r"vis_vram used\s*:\s*([0-9]+) KB",
+    memory_text,
+    flags=re.DOTALL,
+):
+    device_id = int(match.group(1))
+    total_kb = int(match.group(2))
+    used_kb = int(match.group(3))
+    if total_kb <= 0:
+        memory[device_id] = None
+    else:
+        memory[device_id] = round((total_kb - used_kb) * 100.0 / total_kb, 2)
+
+max_utilization = int(sys.argv[1])
+min_free_memory = float(sys.argv[2])
+allow_occupied = sys.argv[3] == "1"
+
 eligible = []
 rejected = []
 for device in sorted(devices, key=lambda item: item["device_id"]):
@@ -357,7 +403,7 @@ for device in sorted(devices, key=lambda item: item["device_id"]):
     utilization = device.get("utilization")
     unavailable_reason = str(device.get("unavailable_reason") or "")
     reasons = []
-    if device_id in busy:
+    if device_id in busy and not allow_occupied:
         reasons.append("busy")
     if unavailable_reason:
         reasons.append(f"unavailable={unavailable_reason}")
@@ -366,8 +412,13 @@ for device in sorted(devices, key=lambda item: item["device_id"]):
     except (TypeError, ValueError):
         reasons.append(f"invalid_utilization={utilization}")
     else:
-        if utilization_value > 5:
+        if utilization_value > max_utilization:
             reasons.append(f"utilization={utilization_value}")
+    free_memory = memory.get(device_id)
+    if free_memory is None:
+        reasons.append("invalid_memory")
+    elif free_memory < min_free_memory:
+        reasons.append(f"free_memory={free_memory:.2f}%")
     if reasons:
         rejected.append(str(device_id) + "(" + ",".join(reasons) + ")")
     else:
@@ -384,7 +435,7 @@ print(selected)
 print(",".join(str(item) for item in eligible))
 print(",".join(str(item) for item in sorted(busy)) or "-")
 print(";".join(rejected) or "-")
-'
+' "$gpu_max_utilization" "$gpu_min_free_memory" "$gpu_allow_occupied"
   )" || return 2
 
   mapfile -t selection_rows <<<"$selection_output"
@@ -480,7 +531,7 @@ sha="$(docker exec "$container" git -c "safe.directory=$source_root" -C "$source
 infinirt_sha="$(docker exec "$container" git -c "safe.directory=$infinirt_source_root" -C "$infinirt_source_root" rev-parse HEAD)"
 
 process_snapshot="$(mx-smi -i "$physical_gpu" --show-process 2>&1)"
-if ! grep -q "no process found" <<<"$process_snapshot"; then
+if ! grep -q "no process found" <<<"$process_snapshot" && [[ "$gpu_allow_occupied" != "1" ]]; then
   printf '%s\n' "$process_snapshot" >&2
   echo "physical MetaX GPU $physical_gpu has a running process" >&2
   exit 2
@@ -495,8 +546,28 @@ for value in payload.values():
 else:
     raise SystemExit(f"MetaX GPU {sys.argv[1]} was not found")
 ' "$physical_gpu")"
-if [[ -z "$utilization" || "$utilization" =~ [^0-9] || "$utilization" -gt 5 ]]; then
-  echo "physical MetaX GPU $physical_gpu utilization is not idle: $utilization" >&2
+if [[ -z "$utilization" || "$utilization" =~ [^0-9] || "$utilization" -gt "$gpu_max_utilization" ]]; then
+  echo "physical MetaX GPU $physical_gpu utilization exceeds ${gpu_max_utilization}%: $utilization" >&2
+  exit 2
+fi
+free_memory="$(mx-smi --show-memory 2>&1 | python3 -c '
+import re, sys
+text = sys.stdin.read()
+match = re.search(
+    r"GPU#" + re.escape(sys.argv[1]) + r"\b.*?vis_vram total\s*:\s*([0-9]+) KB.*?"
+    r"vis_vram used\s*:\s*([0-9]+) KB",
+    text,
+    flags=re.DOTALL,
+)
+if match is None:
+    raise SystemExit(f"MetaX GPU {sys.argv[1]} memory information was not found")
+total, used = int(match.group(1)), int(match.group(2))
+if total <= 0:
+    raise SystemExit(f"MetaX GPU {sys.argv[1]} has invalid total memory")
+print(f"{(total - used) * 100.0 / total:.2f}")
+' "$physical_gpu")"
+if [[ -z "$free_memory" || "$free_memory" =~ [^0-9.] ]] || python3 -c 'import sys; raise SystemExit(float(sys.argv[1]) < float(sys.argv[2]))' "$free_memory" "$gpu_min_free_memory"; then
+  echo "physical MetaX GPU $physical_gpu free memory is below ${gpu_min_free_memory}%: $free_memory" >&2
   exit 2
 fi
 
@@ -505,6 +576,10 @@ fi
   echo "container=$container"
   echo "container_id=$container_id"
   echo "physical_gpu=$physical_gpu"
+  echo "gpu_max_utilization_percent=$gpu_max_utilization"
+  echo "gpu_min_free_memory_percent=$gpu_min_free_memory"
+  echo "gpu_allow_occupied=$gpu_allow_occupied"
+  echo "gpu_free_memory_percent=$free_memory"
   echo "execution_time=$execution_time"
   echo "run_date=$run_date"
   echo "csv_date=$csv_date"
@@ -563,8 +638,10 @@ monitor() {
       if [[ "$cgroup" == *"$container_id"* ]]; then
         echo "process_owner=benchmark_container pid=$pid cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
       else
-        echo "process_owner=foreign pid=$pid cgroup=$cgroup cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
-        if [[ ! -s "$foreign_flag" ]]; then
+        if [[ "$gpu_allow_occupied" == "1" ]]; then
+          echo "process_owner=foreign_allowed pid=$pid cgroup=$cgroup cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+        else
+          echo "process_owner=foreign pid=$pid cgroup=$cgroup cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
           echo "$pid" >>"$foreign_flag"
           docker exec "$container" pkill -f "$harness" 2>/dev/null || true
         fi
@@ -666,6 +743,9 @@ fi
   echo "end=$(date --iso-8601=seconds)"
   echo "container=$container"
   echo "physical_gpu=$physical_gpu"
+  echo "gpu_max_utilization_percent=$gpu_max_utilization"
+  echo "gpu_min_free_memory_percent=$gpu_min_free_memory"
+  echo "gpu_allow_occupied=$gpu_allow_occupied"
   echo "execution_time=$execution_time"
   echo "csv_date=$csv_date"
   echo "source_update=$update_sources"

@@ -124,10 +124,25 @@ DTYPES=float16,float32,bfloat16 PROFILES=decode-4k \
 ```
 
 Idle selection requires no running process, no `unavailable_reason`, and at most
-5% utilization. Automatic selection is refreshed after compilation so a device
-that becomes occupied during the build is not used. Pass a physical index as the
-positional argument, or set `PHYSICAL_GPU`, when an explicit device is required.
-Set `AUTO_SELECT_GPU=0` to make an explicit index mandatory.
+5% utilization by default. Automatic selection is refreshed after compilation
+so a device that becomes occupied during the build is not used. Pass a physical
+index as the positional argument, or set `PHYSICAL_GPU`, when an explicit device
+is required. Set `AUTO_SELECT_GPU=0` to make an explicit index mandatory.
+
+For functional smoke runs that may share a device, tune the resource gate:
+
+```bash
+GPU_MAX_UTILIZATION_PERCENT=40 \
+GPU_MIN_FREE_MEMORY_PERCENT=40 \
+GPU_ALLOW_OCCUPIED=1 \
+PROFILES=decode-4k-small \
+/data-aisoft/infinibench-scripts/scripts/run_metax_benchmark.sh
+```
+
+`GPU_MAX_UTILIZATION_PERCENT` defaults to 5, `GPU_MIN_FREE_MEMORY_PERCENT`
+defaults to 0, and `GPU_ALLOW_OCCUPIED` defaults to 0. Values are percentages.
+Allowing an occupied device makes a run suitable for pipeline validation, but
+latency numbers from that run should not be compared with exclusive benchmarks.
 
 Compilation uses a persistent scikit-build directory at
 `/workspace/.cache/infiniops-build` and defaults to 64 parallel CMake jobs for
