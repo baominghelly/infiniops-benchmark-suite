@@ -78,8 +78,13 @@ the runner refuses to continue when the work tree is dirty, sets `origin` to the
 configured URL, fetches tags and branches, and fast-forwards the configured
 branch (`master` by default). The URL and branch can be overridden with
 `INFINIOPS_REPO_URL`, `INFINIRT_REPO_URL`, `INFINIOPS_BRANCH`, and
-`INFINIRT_BRANCH`. `UPDATE_SOURCES=0` skips this stage and requires both
-repositories to already exist.
+`INFINIRT_BRANCH`. Because direct GitHub access can be intermittent, the default
+repository list tries GitHub directly, then `gh-proxy.com`, then `ghproxy.net`.
+Provide a comma-separated `INFINIOPS_REPO_URLS` or `INFINIRT_REPO_URLS` list to
+change the complete fallback chain. URL probes use
+`SOURCE_PROBE_TIMEOUT_SECONDS=30` and clone/fetch operations use
+`SOURCE_OPERATION_TIMEOUT_SECONDS=900`. `UPDATE_SOURCES=0` skips this stage and
+requires both repositories to already exist.
 
 The runner has two time semantics. The execution time defaults to the current
 wall clock and can be overridden with `EXECUTION_TIME=YYYYMMDD-HHMMSS`. The

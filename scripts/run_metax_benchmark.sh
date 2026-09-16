@@ -82,10 +82,18 @@ output_host="$output_root/$device_id/$run_date"
 container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/data-aisoft/infinibench-scripts}"
 source_root="${INFINIOPS_SOURCE_ROOT:-/workspace/InfiniOps}"
 infinirt_source_root="${INFINIRT_SOURCE_ROOT:-/workspace/InfiniRT}"
-infiniops_repo_url="${INFINIOPS_REPO_URL:-https://github.com/InfiniTensor/InfiniOps.git}"
-infinirt_repo_url="${INFINIRT_REPO_URL:-https://github.com/InfiniTensor/InfiniRT.git}"
+infiniops_repo_urls_input="${INFINIOPS_REPO_URLS:-${INFINIOPS_REPO_URL:-https://github.com/InfiniTensor/InfiniOps.git,https://gh-proxy.com/https://github.com/InfiniTensor/InfiniOps.git,https://ghproxy.net/https://github.com/InfiniTensor/InfiniOps.git}}"
+infinirt_repo_urls_input="${INFINIRT_REPO_URLS:-${INFINIRT_REPO_URL:-https://github.com/InfiniTensor/InfiniRT.git,https://gh-proxy.com/https://github.com/InfiniTensor/InfiniRT.git,https://ghproxy.net/https://github.com/InfiniTensor/InfiniRT.git}}"
+source_probe_timeout="${SOURCE_PROBE_TIMEOUT_SECONDS:-30}"
+source_operation_timeout="${SOURCE_OPERATION_TIMEOUT_SECONDS:-900}"
 infiniops_branch="${INFINIOPS_BRANCH:-master}"
 infinirt_branch="${INFINIRT_BRANCH:-master}"
+for timeout_value in "$source_probe_timeout" "$source_operation_timeout"; do
+  if [[ ! "$timeout_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "invalid source timeout: $timeout_value; expected a positive integer" >&2
+    exit 2
+  fi
+done
 build_dir="${INFINIOPS_BUILD_DIR:-/workspace/.cache/infiniops-build}"
 cmake_build_parallel_level="${CMAKE_BUILD_PARALLEL_LEVEL:-64}"
 output_container_root="${CONTAINER_OUTPUT_ROOT:-$output_root}"
@@ -157,14 +165,22 @@ docker exec "$container" rm -f -- "$output_container/$output_path_marker"
 prepare_source_repo() {
   local label="$1"
   local path="$2"
-  local url="$3"
+  local urls_input="$3"
   local branch="$4"
   local requested_ref="$5"
   local source_date="$6"
   local cutoff requested_commit status_output resolved_ref
+  local -a urls
+  local url selected_url clone_target
+
+  read -r -a urls <<<"${urls_input//,/ }"
+  if [[ "${#urls[@]}" -eq 0 ]]; then
+    echo "$label repository URL list is empty" | tee -a "$launcher_log" >&2
+    return 2
+  fi
 
   echo "=== source $label prepare start=$(date --iso-8601=seconds) ===" | tee -a "$launcher_log"
-  echo "repo=$url branch=$branch path=$path" | tee -a "$launcher_log"
+  echo "repo_urls=$urls_input branch=$branch path=$path" | tee -a "$launcher_log"
 
   if ! docker exec "$container" test -d "$path/.git"; then
     if docker exec "$container" test -e "$path"; then
@@ -175,8 +191,24 @@ prepare_source_repo() {
     if ! docker exec "$container" mkdir -p "$(dirname "$path")"; then
       return 2
     fi
-    if ! docker exec "$container" git clone --branch "$branch" "$url" "$path" 2>&1 | tee -a "$launcher_log"; then
-      echo "$label clone failed" | tee -a "$launcher_log" >&2
+    clone_target="${path}.clone-$$"
+    docker exec "$container" test ! -e "$clone_target"
+    for url in "${urls[@]}"; do
+      echo "clone_candidate=$url" | tee -a "$launcher_log"
+      if ! docker exec "$container" timeout "$source_probe_timeout" git ls-remote "$url" HEAD >/dev/null 2>&1; then
+        echo "clone_candidate_unreachable=$url" | tee -a "$launcher_log"
+        continue
+      fi
+      if docker exec "$container" timeout "$source_operation_timeout" git clone --branch "$branch" "$url" "$clone_target" 2>&1 | tee -a "$launcher_log"; then
+        docker exec "$container" mv "$clone_target" "$path"
+        selected_url="$url"
+        break
+      fi
+      echo "clone_candidate_failed=$url" | tee -a "$launcher_log" >&2
+      docker exec "$container" rm -rf -- "$clone_target"
+    done
+    if [[ -z "$selected_url" ]]; then
+      echo "$label clone failed for all repository URLs" | tee -a "$launcher_log" >&2
       return 2
     fi
   else
@@ -190,13 +222,28 @@ prepare_source_repo() {
       printf '%s\n' "$status_output" | tee -a "$launcher_log" >&2
       return 2
     fi
-    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" remote set-url origin "$url" 2>&1 | tee -a "$launcher_log"; then
-      return 2
-    fi
-    if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" fetch --prune --tags origin 2>&1 | tee -a "$launcher_log"; then
+    for url in "${urls[@]}"; do
+      echo "fetch_candidate=$url" | tee -a "$launcher_log"
+      if ! docker exec "$container" timeout "$source_probe_timeout" git ls-remote "$url" HEAD >/dev/null 2>&1; then
+        echo "fetch_candidate_unreachable=$url" | tee -a "$launcher_log"
+        continue
+      fi
+      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" remote set-url origin "$url" 2>&1 | tee -a "$launcher_log"; then
+        continue
+      fi
+      if docker exec "$container" timeout "$source_operation_timeout" git -c "safe.directory=$path" -C "$path" fetch --prune --tags origin 2>&1 | tee -a "$launcher_log"; then
+        selected_url="$url"
+        break
+      fi
+      echo "fetch_candidate_failed=$url" | tee -a "$launcher_log" >&2
+    done
+    if [[ -z "$selected_url" ]]; then
+      echo "$label fetch failed for all repository URLs" | tee -a "$launcher_log" >&2
       return 2
     fi
   fi
+
+  echo "$label selected_repo=$selected_url" | tee -a "$launcher_log"
 
   if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     echo "$label remote branch not found: origin/$branch" | tee -a "$launcher_log" >&2
@@ -233,7 +280,7 @@ prepare_source_repo() {
       if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" checkout -q "$branch" 2>&1 | tee -a "$launcher_log"; then
         return 2
       fi
-      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" pull --ff-only origin "$branch" 2>&1 | tee -a "$launcher_log"; then
+      if ! docker exec "$container" git -c "safe.directory=$path" -C "$path" merge --ff-only "refs/remotes/origin/$branch" 2>&1 | tee -a "$launcher_log"; then
         return 2
       fi
     else
@@ -248,8 +295,8 @@ prepare_source_repo() {
 }
 
 if [[ "$update_sources" == "1" ]]; then
-  prepare_source_repo "InfiniOps" "$source_root" "$infiniops_repo_url" "$infiniops_branch" "$infiniops_ref" "$backfill_date"
-  prepare_source_repo "InfiniRT" "$infinirt_source_root" "$infinirt_repo_url" "$infinirt_branch" "$infinirt_ref" "$backfill_date"
+  prepare_source_repo "InfiniOps" "$source_root" "$infiniops_repo_urls_input" "$infiniops_branch" "$infiniops_ref" "$backfill_date"
+  prepare_source_repo "InfiniRT" "$infinirt_source_root" "$infinirt_repo_urls_input" "$infinirt_branch" "$infinirt_ref" "$backfill_date"
 else
   {
     echo "source_update=disabled"
@@ -463,10 +510,10 @@ fi
   echo "csv_date=$csv_date"
   echo "source_update=$update_sources"
   echo "source_backfill_date=$backfill_date"
-  echo "infiniops_repo=$infiniops_repo_url"
+  echo "infiniops_repo_urls=$infiniops_repo_urls_input"
   echo "infiniops_branch=$infiniops_branch"
   echo "infiniops_requested_ref=$infiniops_ref"
-  echo "infinirt_repo=$infinirt_repo_url"
+  echo "infinirt_repo_urls=$infinirt_repo_urls_input"
   echo "infinirt_branch=$infinirt_branch"
   echo "infinirt_requested_ref=$infinirt_ref"
   echo "source_root=$source_root"
