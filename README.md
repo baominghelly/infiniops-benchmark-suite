@@ -54,16 +54,19 @@ dtypes in one invocation:
 DTYPES=float16,float32,bfloat16 scripts/run_metax_benchmark.sh 0
 ```
 
-Raw results are stored as:
+Canonical raw and final results are written directly to:
 
 ```text
-results/<date>/<dtype>/decode-4k/
-results/<date>/<dtype>/decode-8k/
-results/<date>/<dtype>/prefill-4k/
+/data-aisoft/infinibench_data/metax-c550/<date>/
 ```
 
-The runner then exports one combined CSV and diagnostics table at the date-root
-level. Rows are distinguished by their `dtype` column.
+The runner then exports one combined CSV and diagnostics table at that
+date-root level. Rows are distinguished by their `dtype` column.
+
+The host path `/data-aisoft/infinibench_data` and the same path inside the
+container must refer to the same bind mount. `OUTPUT_ROOT` and
+`CONTAINER_OUTPUT_ROOT` remain available for environments that cannot mount
+that canonical path.
 
 `RUN_DATE` is also used as the output directory name. When it is a test label
 rather than a date, set `CSV_DATE` explicitly, for example

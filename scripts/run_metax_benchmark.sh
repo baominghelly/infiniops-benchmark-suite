@@ -11,6 +11,8 @@ fi
 run_date="${RUN_DATE:-$(date +%Y-%m-%d)}"
 tester="${TESTER:-baoming}"
 build_infiniops="${BUILD_INFINIOPS:-0}"
+device_id="${DEVICE_ID:-metax-c550}"
+output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
 read -r -a dtypes <<<"${dtypes_input//,/ }"
 for dtype in "${dtypes[@]}"; do
@@ -24,13 +26,12 @@ for dtype in "${dtypes[@]}"; do
 done
 
 host_tools_root="${BENCHMARK_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-host_deployment_root="$(cd "$host_tools_root/.." && pwd)"
-output_host="${OUTPUT_ROOT:-$host_deployment_root/InfiniOps_benchmark_results}/$run_date"
+output_host="$output_root/$device_id/$run_date"
 container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/workspace/InfiniOps_benchmark_tools}"
 source_root="${INFINIOPS_SOURCE_ROOT:-/workspace/InfiniOps}"
 infinirt_source_root="${INFINIRT_SOURCE_ROOT:-/workspace/InfiniRT}"
-output_container_root="${CONTAINER_OUTPUT_ROOT:-/workspace/InfiniOps_benchmark_results}"
-output_container="$output_container_root/$run_date"
+output_container_root="${CONTAINER_OUTPUT_ROOT:-$output_root}"
+output_container="$output_container_root/$device_id/$run_date"
 harness="$container_tools_root/scripts/full_operator_benchmark.py"
 exporter="$container_tools_root/scripts/export_full_operator_report.py"
 launcher_log="$output_host/benchmark-launcher.log"
