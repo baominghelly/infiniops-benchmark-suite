@@ -13,6 +13,7 @@ and PyTorch comparisons on accelerator runtimes.
 - `scripts/classify_operator_semantics_9cat.py`: compact nine-category
   classification used by report exports.
 - Platform runners under `scripts/run_*_benchmark.sh`.
+- `docs/run_metax_benchmark.md`: complete MetaX runner operations guide.
 - Regression tests under `tests/`.
 
 The exported platform CSV contains:
@@ -51,6 +52,10 @@ using it on a new machine.
 `mx-smi`, and `/proc` access to select a device and attribute GPU processes,
 but compilation and benchmark execution always run inside the configured Docker
 container through `docker exec`.
+
+See [docs/run_metax_benchmark.md](docs/run_metax_benchmark.md) for the complete
+MetaX runner guide, including source backfill, GPU resource gates, output
+contracts, monitoring commands, and troubleshooting.
 
 On the MetaX machine, deploy the suite under the shared NFS entry:
 
