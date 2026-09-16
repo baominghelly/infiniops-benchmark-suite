@@ -47,13 +47,31 @@ Platform-specific runners may require environment variables or arguments for
 the container name and physical device index. Inspect the runner header before
 using it on a new machine.
 
+`run_metax_benchmark.sh` is a host-side orchestrator. It uses host `docker`,
+`mx-smi`, and `/proc` access to select a device and attribute GPU processes,
+but compilation and benchmark execution always run inside the configured Docker
+container through `docker exec`.
+
 The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
 dtypes in one invocation. It also accepts a comma-separated `PROFILES` list.
-The workflow defaults are three dtypes and one coverage profile:
+Its workflow defaults are to compile InfiniOps, automatically choose the
+lowest-numbered idle MetaX GPU, run three dtypes, and use one coverage profile:
 
 ```bash
-DTYPES=float16,float32,bfloat16 PROFILES=decode-4k scripts/run_metax_benchmark.sh 0
+DTYPES=float16,float32,bfloat16 PROFILES=decode-4k scripts/run_metax_benchmark.sh
 ```
+
+Idle selection requires no running process, no `unavailable_reason`, and at most
+5% utilization. Automatic selection is refreshed after compilation so a device
+that becomes occupied during the build is not used. Pass a physical index as the
+positional argument, or set `PHYSICAL_GPU`, when an explicit device is required.
+Set `AUTO_SELECT_GPU=0` to make an explicit index mandatory.
+
+Compilation uses a persistent scikit-build directory at
+`/workspace/.cache/infiniops-build` and defaults to 64 parallel CMake jobs for
+the 128-core MetaX host. Override these with `INFINIOPS_BUILD_DIR` and
+`CMAKE_BUILD_PARALLEL_LEVEL`. Set `BUILD_INFINIOPS=0` only for a runtime-only
+run against an already installed InfiniOps package.
 
 Since every profile uses the same 495-operator set with a different shape,
 `decode-4k` alone is sufficient for operator-coverage runs. Add
@@ -62,7 +80,7 @@ Since every profile uses the same 495-operator set with a different shape,
 For development smoke runs, select the reduced profile:
 
 ```bash
-PROFILES=decode-4k-small scripts/run_metax_benchmark.sh 0
+PROFILES=decode-4k-small scripts/run_metax_benchmark.sh
 ```
 
 `decode-4k-small` uses a `[1, 128]` default shape and an 18-operator

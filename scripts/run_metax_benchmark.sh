@@ -2,15 +2,17 @@
 set -euo pipefail
 
 container="${CONTAINER:-baoming_infiniops_metax}"
-physical_gpu="${1:-${PHYSICAL_GPU:-}}"
-if [[ -z "$physical_gpu" ]]; then
-  echo "usage: [CONTAINER=<name>] $0 <physical-gpu-index>" >&2
-  exit 2
-fi
+requested_gpu="${1:-${PHYSICAL_GPU:-}}"
+auto_select_gpu="${AUTO_SELECT_GPU:-1}"
+physical_gpu=""
+gpu_selection=""
+gpu_candidates=""
+gpu_busy=""
+gpu_rejected=""
 
 run_date="${RUN_DATE:-$(date +%Y-%m-%d)}"
 tester="${TESTER:-baoming}"
-build_infiniops="${BUILD_INFINIOPS:-0}"
+build_infiniops="${BUILD_INFINIOPS:-1}"
 device_id="${DEVICE_ID:-metax-c550}"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
@@ -41,6 +43,8 @@ output_host="$output_root/$device_id/$run_date"
 container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/workspace/InfiniOps_benchmark_tools}"
 source_root="${INFINIOPS_SOURCE_ROOT:-/workspace/InfiniOps}"
 infinirt_source_root="${INFINIRT_SOURCE_ROOT:-/workspace/InfiniRT}"
+build_dir="${INFINIOPS_BUILD_DIR:-/workspace/.cache/infiniops-build}"
+cmake_build_parallel_level="${CMAKE_BUILD_PARALLEL_LEVEL:-64}"
 output_container_root="${CONTAINER_OUTPUT_ROOT:-$output_root}"
 output_container="$output_container_root/$device_id/$run_date"
 harness="$container_tools_root/scripts/full_operator_benchmark.py"
@@ -89,14 +93,140 @@ if ! docker exec "$container" test -f "$output_container/$output_path_marker"; t
 fi
 rm -f -- "$output_host/$output_path_marker"
 
+select_idle_gpu() {
+  local gpu_json process_table selection_output
+  if ! gpu_json="$(mx-smi -j 2>&1)"; then
+    echo "mx-smi -j failed:" >&2
+    printf '%s\n' "$gpu_json" >&2
+    return 2
+  fi
+  if ! process_table="$(mx-smi --show-process 2>&1)"; then
+    echo "mx-smi --show-process failed:" >&2
+    printf '%s\n' "$process_table" >&2
+    return 2
+  fi
+
+  selection_output="$(
+    {
+      printf '%s\n' "$gpu_json"
+      printf '\n__MX_SMI_PROCESS_TABLE__\n'
+      printf '%s\n' "$process_table"
+    } | python3 -c '
+import json
+import sys
+
+raw = sys.stdin.read()
+marker = "__MX_SMI_PROCESS_TABLE__"
+if marker not in raw:
+    raise SystemExit("mx-smi output did not contain the process-table marker")
+json_text, process_text = raw.split(marker, 1)
+json_start = json_text.find("{")
+if json_start < 0:
+    raise SystemExit("mx-smi -j output did not contain JSON")
+payload = json.loads(json_text[json_start:])
+
+devices = []
+for value in payload.values():
+    if isinstance(value, dict) and isinstance(value.get("device_id"), int):
+        devices.append(value)
+if not devices:
+    raise SystemExit("mx-smi -j output did not contain any MetaX devices")
+
+busy = set()
+for line in process_text.splitlines():
+    columns = [column.strip() for column in line.split("|")]
+    if len(columns) >= 4 and columns[1].isdigit() and columns[2].isdigit():
+        busy.add(int(columns[1]))
+
+eligible = []
+rejected = []
+for device in sorted(devices, key=lambda item: item["device_id"]):
+    device_id = device["device_id"]
+    utilization = device.get("utilization")
+    unavailable_reason = str(device.get("unavailable_reason") or "")
+    reasons = []
+    if device_id in busy:
+        reasons.append("busy")
+    if unavailable_reason:
+        reasons.append(f"unavailable={unavailable_reason}")
+    try:
+        utilization_value = int(utilization)
+    except (TypeError, ValueError):
+        reasons.append(f"invalid_utilization={utilization}")
+    else:
+        if utilization_value > 5:
+            reasons.append(f"utilization={utilization_value}")
+    if reasons:
+        rejected.append(str(device_id) + "(" + ",".join(reasons) + ")")
+    else:
+        eligible.append(device_id)
+
+if not eligible:
+    raise SystemExit(
+        "no idle MetaX GPU found; rejected: "
+        + (", ".join(rejected) if rejected else "unknown")
+    )
+
+selected = eligible[0]
+print(selected)
+print(",".join(str(item) for item in eligible))
+print(",".join(str(item) for item in sorted(busy)) or "-")
+print(";".join(rejected) or "-")
+'
+  )" || return 2
+
+  mapfile -t selection_rows <<<"$selection_output"
+  if [[ "${#selection_rows[@]}" -ne 4 ]]; then
+    echo "unexpected idle-GPU selector output: $selection_output" >&2
+    return 2
+  fi
+  physical_gpu="${selection_rows[0]}"
+  gpu_candidates="${selection_rows[1]}"
+  gpu_busy="${selection_rows[2]}"
+  gpu_rejected="${selection_rows[3]}"
+  gpu_selection="auto"
+}
+
+if [[ -n "$requested_gpu" ]]; then
+  if [[ ! "$requested_gpu" =~ ^[0-9]+$ ]]; then
+    echo "invalid physical GPU index: $requested_gpu" >&2
+    exit 2
+  fi
+  physical_gpu="$requested_gpu"
+  gpu_selection="explicit"
+elif [[ "$auto_select_gpu" == "1" ]]; then
+  if ! select_idle_gpu; then
+    exit 2
+  fi
+else
+  echo "usage: [CONTAINER=<name>] [AUTO_SELECT_GPU=0] [PHYSICAL_GPU=<index>] $0 [<physical-gpu-index>]" >&2
+  exit 2
+fi
+
+{
+  echo "gpu_selection=$gpu_selection"
+  echo "physical_gpu=$physical_gpu"
+  echo "gpu_candidates=$gpu_candidates"
+  echo "gpu_busy=$gpu_busy"
+  echo "gpu_rejected=$gpu_rejected"
+} >>"$launcher_log"
+
 if [[ "$build_infiniops" == "1" ]]; then
+  docker exec "$container" mkdir -p "$build_dir"
+  {
+    echo "=== build start=$(date --iso-8601=seconds) ==="
+    echo "build_dir=$build_dir"
+    echo "cmake_build_parallel_level=$cmake_build_parallel_level"
+  } >>"$launcher_log"
+  build_exit=0
   docker exec \
-    -e CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-16}" \
+    -e CMAKE_BUILD_PARALLEL_LEVEL="$cmake_build_parallel_level" \
     "$container" python3 -m pip install \
       --no-build-isolation \
       --no-deps \
       --force-reinstall \
       "$source_root" \
+      "--config-settings=build-dir=$build_dir" \
       --config-settings=cmake.define.AUTO_DETECT_DEVICES=OFF \
       --config-settings=cmake.define.AUTO_DETECT_BACKENDS=OFF \
       --config-settings=cmake.define.WITH_CPU=ON \
@@ -106,7 +236,30 @@ if [[ "$build_infiniops" == "1" ]]; then
       "--config-settings=cmake.define.INFINI_RT_SOURCE_DIR=$infinirt_source_root" \
       "--config-settings=cmake.define.CMAKE_C_COMPILER=$source_root/scripts/mxcc_wrapper.sh" \
       "--config-settings=cmake.define.CMAKE_CXX_COMPILER=$source_root/scripts/mxcc_wrapper.sh" \
-      2>&1 | tee -a "$launcher_log"
+      2>&1 | tee -a "$launcher_log" || build_exit=$?
+  if [[ "$build_exit" -ne 0 ]]; then
+    echo "build_exit=$build_exit" | tee -a "$launcher_log"
+    exit "$build_exit"
+  fi
+  echo "=== build end=$(date --iso-8601=seconds) ===" >>"$launcher_log"
+fi
+
+# Compilation can take long enough for the initially selected device to become
+# occupied. Refresh automatic selection immediately before benchmark preflight.
+# An explicit GPU request is never changed automatically.
+if [[ "$gpu_selection" == "auto" ]]; then
+  previous_gpu="$physical_gpu"
+  if ! select_idle_gpu; then
+    exit 2
+  fi
+  {
+    echo "gpu_reselection=auto"
+    echo "previous_gpu=$previous_gpu"
+    echo "physical_gpu=$physical_gpu"
+    echo "gpu_candidates=$gpu_candidates"
+    echo "gpu_busy=$gpu_busy"
+    echo "gpu_rejected=$gpu_rejected"
+  } >>"$launcher_log"
 fi
 
 metadata="${INFINIOPS_METADATA:-$source_root/generated/torch_ops_metadata.json}"
