@@ -373,9 +373,9 @@ if not devices:
 
 busy = set()
 for line in process_text.splitlines():
-    columns = [column.strip() for column in line.split("|")]
-    if len(columns) >= 4 and columns[1].isdigit() and columns[2].isdigit():
-        busy.add(int(columns[1]))
+    match = re.match(r"\|\s*(\d+)\s+(\d+)\s+", line)
+    if match:
+        busy.add(int(match.group(1)))
 
 memory = {}
 for match in re.finditer(
@@ -625,10 +625,13 @@ monitor() {
       sleep 2
       continue
     fi
-    pids="$(awk -F '|' -v gpu="$physical_gpu" '
-      $2 ~ /^[[:space:]]*[0-9]+[[:space:]]*$/ && trim($2) == gpu { print trim($3) }
-      function trim(text) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", text); return text }
-    ' <<<"$snapshot")"
+    pids="$(python3 -c '
+import re, sys
+for line in sys.stdin.read().splitlines():
+    match = re.match(r"\|\s*(\d+)\s+(\d+)\s+", line)
+    if match and match.group(1) == sys.argv[1]:
+        print(match.group(2))
+' "$physical_gpu" <<<"$snapshot")"
     for pid in $pids; do
       if [[ ! -e "/proc/$pid" ]]; then
         echo "process_owner=exited_before_attribution pid=$pid"
