@@ -52,13 +52,25 @@ using it on a new machine.
 but compilation and benchmark execution always run inside the configured Docker
 container through `docker exec`.
 
+On the MetaX machine, deploy the suite under the shared NFS entry:
+
+```text
+/data-aisoft/infinibench-scripts/
+```
+
+The frontend or another user's agent should invoke the host-side runner from
+that shared path rather than from a user's home directory. Keep the scripts tree
+read-only to benchmark callers; result files still belong under
+`/data-aisoft/infinibench_data/`.
+
 The MetaX runner accepts a comma-separated `DTYPES` list and runs all requested
 dtypes in one invocation. It also accepts a comma-separated `PROFILES` list.
 Its workflow defaults are to compile InfiniOps, automatically choose the
 lowest-numbered idle MetaX GPU, run three dtypes, and use one coverage profile:
 
 ```bash
-DTYPES=float16,float32,bfloat16 PROFILES=decode-4k scripts/run_metax_benchmark.sh
+DTYPES=float16,float32,bfloat16 PROFILES=decode-4k \
+  /data-aisoft/infinibench-scripts/scripts/run_metax_benchmark.sh
 ```
 
 Idle selection requires no running process, no `unavailable_reason`, and at most
@@ -80,7 +92,8 @@ Since every profile uses the same 495-operator set with a different shape,
 For development smoke runs, select the reduced profile:
 
 ```bash
-PROFILES=decode-4k-small scripts/run_metax_benchmark.sh
+PROFILES=decode-4k-small \
+  /data-aisoft/infinibench-scripts/scripts/run_metax_benchmark.sh
 ```
 
 `decode-4k-small` uses a `[1, 128]` default shape and an 18-operator

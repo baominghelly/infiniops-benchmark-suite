@@ -40,7 +40,7 @@ done
 
 host_tools_root="${BENCHMARK_TOOLS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 output_host="$output_root/$device_id/$run_date"
-container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/workspace/InfiniOps_benchmark_tools}"
+container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/data-aisoft/infinibench-scripts}"
 source_root="${INFINIOPS_SOURCE_ROOT:-/workspace/InfiniOps}"
 infinirt_source_root="${INFINIRT_SOURCE_ROOT:-/workspace/InfiniRT}"
 build_dir="${INFINIOPS_BUILD_DIR:-/workspace/.cache/infiniops-build}"
@@ -62,12 +62,6 @@ decode_4k_small_ops="${METAX_DECODE_4K_SMALL_OPS:-$small_ops}"
 decode_8k_ops="${METAX_DECODE_8K_OPS:-$target_ops}"
 prefill_4k_ops="${METAX_PREFILL_4K_OPS:-$target_ops}"
 
-mkdir -p "$output_host"
-: >"$launcher_log"
-: >"$monitor_log"
-: >"$foreign_flag"
-: >"$done_file"
-
 if ! docker inspect "$container" >/dev/null 2>&1; then
   echo "container not found: $container" >&2
   exit 2
@@ -78,11 +72,21 @@ if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; the
 fi
 container_id="$(docker inspect -f '{{.Id}}' "$container")"
 
+# Create the run directory from the container so a shared frontend/agent
+# account does not need write permission on the parent NFS directory. The
+# launcher writes logs from the host after this directory is prepared.
+docker exec "$container" mkdir -p "$output_container"
+docker exec "$container" chmod 01777 "$output_container"
+mkdir -p "$output_host"
+: >"$launcher_log"
+: >"$monitor_log"
+: >"$foreign_flag"
+: >"$done_file"
+
 docker exec "$container" test -d "$source_root"
 docker exec "$container" test -d "$infinirt_source_root"
 docker exec "$container" test -f "$harness"
 docker exec "$container" test -f "$exporter"
-docker exec "$container" mkdir -p "$output_container"
 
 output_path_marker=".benchmark-output-path-check-$$"
 : >"$output_host/$output_path_marker"
