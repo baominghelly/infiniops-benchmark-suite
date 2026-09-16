@@ -10,7 +10,7 @@ gpu_candidates=""
 gpu_busy=""
 gpu_rejected=""
 
-run_date="${RUN_DATE:-$(date +%Y-%m-%d)}"
+execution_time="${EXECUTION_TIME:-$(date +%Y%m%d-%H%M%S)}"
 tester="${TESTER:-baoming}"
 build_infiniops="${BUILD_INFINIOPS:-1}"
 update_sources="${UPDATE_SOURCES:-1}"
@@ -41,6 +41,23 @@ for profile in "${profiles[@]}"; do
       ;;
   esac
 done
+
+if [[ -n "${RUN_DATE:-}" || -n "${CSV_DATE:-}" ]]; then
+  echo "RUN_DATE and CSV_DATE are no longer accepted; use optional EXECUTION_TIME and/or BACKFILL_DATE" >&2
+  exit 2
+fi
+execution_time_iso="${execution_time:0:4}-${execution_time:4:2}-${execution_time:6:2} ${execution_time:9:2}:${execution_time:11:2}:${execution_time:13:2}"
+if [[ ! "$execution_time" =~ ^[0-9]{8}-[0-9]{6}$ ]] || ! date -d "$execution_time_iso" >/dev/null 2>&1; then
+  echo "invalid EXECUTION_TIME: $execution_time; expected YYYYMMDD-HHMMSS" >&2
+  exit 2
+fi
+if [[ -n "$backfill_date" ]]; then
+  run_date="backfill-${backfill_date//-/}-${execution_time}"
+  csv_date="${backfill_date//-//}"
+else
+  run_date="$execution_time"
+  csv_date="${execution_time:0:4}/${execution_time:4:2}/${execution_time:6:2}"
+fi
 
 case "$update_sources" in
   0|1) ;;
@@ -81,7 +98,6 @@ launcher_log="$output_host/benchmark-launcher.log"
 monitor_log="$output_host/benchmark-monitor.log"
 foreign_flag="$output_host/foreign-process.flag"
 done_file="$output_host/benchmark.done"
-csv_date="${CSV_DATE:-${run_date//-//}}"
 
 target_ops=abs,add,addmm,amax,amin,argmax,bitwise_and,bitwise_not,bitwise_or,bmm,cat,ceil,clamp,cos,cumsum,div,eq,exp,floor,gather,ge,gelu,gt,hardtanh,index_select,le,log,log_softmax,lt,matmul,maximum,mean,minimum,mm,mul,ne,neg,pow,reciprocal,relu,round,rsqrt,sigmoid,sign,silu,sin,softmax,sort,sqrt,sub,sum,tanh,topk
 small_ops=abs,add,avg_pool2d,bmm,gather,fft_fft,gelu,matmul,mm,mul,relu,sigmoid,silu,softmax,special_gammaln,sparse_sampled_addmm,sum,where
@@ -438,7 +454,9 @@ fi
   echo "container=$container"
   echo "container_id=$container_id"
   echo "physical_gpu=$physical_gpu"
+  echo "execution_time=$execution_time"
   echo "run_date=$run_date"
+  echo "csv_date=$csv_date"
   echo "source_update=$update_sources"
   echo "source_backfill_date=$backfill_date"
   echo "infiniops_repo=$infiniops_repo_url"
@@ -597,6 +615,8 @@ fi
   echo "end=$(date --iso-8601=seconds)"
   echo "container=$container"
   echo "physical_gpu=$physical_gpu"
+  echo "execution_time=$execution_time"
+  echo "csv_date=$csv_date"
   echo "source_update=$update_sources"
   echo "source_backfill_date=$backfill_date"
   echo "infiniops_requested_ref=$infiniops_ref"

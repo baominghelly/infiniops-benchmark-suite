@@ -81,13 +81,18 @@ branch (`master` by default). The URL and branch can be overridden with
 `INFINIRT_BRANCH`. `UPDATE_SOURCES=0` skips this stage and requires both
 repositories to already exist.
 
-For a date backfill, set `BACKFILL_DATE=YYYY-MM-DD`. Both repositories select
-the last commit on their configured remote branch whose commit time is no later
-than 23:59:59 Asia/Shanghai on that date, check out that commit, and then build:
+The runner has two time semantics. The execution time defaults to the current
+wall clock and can be overridden with `EXECUTION_TIME=YYYYMMDD-HHMMSS`. The
+optional `BACKFILL_DATE=YYYY-MM-DD` is the historical source date. A normal run
+writes to `<execution-time>/`; a backfill writes to
+`backfill-<target-date>-<execution-time>/`. For backfill runs, the CSV `date`
+column uses the target date rather than the execution date.
+
+For a date backfill, both repositories select the last commit on their configured
+remote branch whose commit time is no later than 23:59:59 Asia/Shanghai on that
+date, check out that commit, and then build:
 
 ```bash
-RUN_DATE=backfill-20260911 \
-CSV_DATE=2026/09/11 \
 BACKFILL_DATE=2026-09-11 \
 DTYPES=float16,float32,bfloat16 \
 PROFILES=decode-4k-small \
@@ -154,9 +159,9 @@ container must refer to the same bind mount. `OUTPUT_ROOT` and
 `CONTAINER_OUTPUT_ROOT` remain available for environments that cannot mount
 that canonical path.
 
-`RUN_DATE` is also used as the output directory name. When it is a test label
-rather than a date, set `CSV_DATE` explicitly, for example
-`CSV_DATE=2026/09/15`.
+`RUN_DATE` and `CSV_DATE` are intentionally not accepted by the MetaX runner.
+The output directory and CSV date are derived from `EXECUTION_TIME` and
+`BACKFILL_DATE`.
 
 The general harness command is:
 
