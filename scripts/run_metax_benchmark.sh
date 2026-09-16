@@ -141,14 +141,18 @@ mkdir -p "$output_host"
 docker exec "$container" test -f "$harness"
 docker exec "$container" test -f "$exporter"
 
-output_path_marker=".benchmark-output-path-check-$$"
-: >"$output_host/$output_path_marker"
-if ! docker exec "$container" test -f "$output_container/$output_path_marker"; then
-  rm -f -- "$output_host/$output_path_marker"
+# Verify that the host and container output roots resolve to the same bind
+# mount. The container owns the run directory on NFS, so create and remove the
+# marker from the container. A host-side unlink can fail with EPERM in a sticky
+# directory when the runner is invoked by another shared account.
+output_path_marker=".benchmark-output-path-check-$$-$(date +%s%N)"
+docker exec "$container" touch "$output_container/$output_path_marker"
+if ! test -f "$output_host/$output_path_marker"; then
+  docker exec "$container" rm -f -- "$output_container/$output_path_marker"
   echo "OUTPUT_ROOT and CONTAINER_OUTPUT_ROOT do not point to the same mounted directory" >&2
   exit 2
 fi
-rm -f -- "$output_host/$output_path_marker"
+docker exec "$container" rm -f -- "$output_container/$output_path_marker"
 
 prepare_source_repo() {
   local label="$1"
