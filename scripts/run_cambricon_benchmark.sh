@@ -617,6 +617,8 @@ if [[ "${#exporter_sources[@]}" -gt 0 ]]; then
     --report "$output_container/report.md" \
     --platform cambricon \
     --date "$csv_date" \
+    --infiniops-commit "$sha" \
+    --infinirt-commit "$infinirt_sha" \
     --tester "$tester" 2>&1 | tee -a "$launcher_log"
   exporter_exit=${PIPESTATUS[0]}
   if [[ "$exporter_exit" -ne 0 ]]; then

@@ -29,7 +29,8 @@ The exported platform CSV contains:
 
 ```text
 platform,op_name,dtype,shape_config,ic_latency_us,ic_tflops,
-pt_latency_us,pt_tflops,date,tester,remarks,category_code
+pt_latency_us,pt_tflops,date,tester,remarks,category_code,
+infiniops_commit,infinirt_commit
 ```
 
 `category_code` uses:

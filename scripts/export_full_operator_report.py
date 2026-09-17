@@ -34,6 +34,8 @@ PLATFORM_FIELDS = [
     "tester",
     "remarks",
     "category_code",
+    "infiniops_commit",
+    "infinirt_commit",
 ]
 
 CATEGORY_CODES = {
@@ -175,7 +177,13 @@ def _category_code(row: dict[str, Any]) -> str:
 
 
 def platform_row(
-    row: dict[str, Any], *, platform: str, run_date: str, tester: str
+    row: dict[str, Any],
+    *,
+    platform: str,
+    run_date: str,
+    tester: str,
+    infiniops_commit: str = "NA",
+    infinirt_commit: str = "NA",
 ) -> dict[str, str]:
     flops = _flops(row)
     active = row.get("active_implementation_indices", [])
@@ -201,6 +209,8 @@ def platform_row(
         "tester": tester,
         "remarks": remarks,
         "category_code": _category_code(row),
+        "infiniops_commit": infiniops_commit,
+        "infinirt_commit": infinirt_commit,
     }
 
 
@@ -287,6 +297,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--platform", default="nvidia")
     parser.add_argument("--date", dest="run_date", default=date.today().strftime("%Y/%m/%d"))
     parser.add_argument("--tester", default="baoming")
+    parser.add_argument(
+        "--infiniops-commit",
+        default="NA",
+        help="InfiniOps Git commit used for the benchmark",
+    )
+    parser.add_argument(
+        "--infinirt-commit",
+        default="NA",
+        help="InfiniRT Git commit used for the benchmark",
+    )
     args = parser.parse_args(argv)
 
     rows = _load_rows(args.sources)
@@ -301,7 +321,12 @@ def main(argv: list[str] | None = None) -> int:
         for row in successes:
             writer.writerow(
                 platform_row(
-                    row, platform=args.platform, run_date=args.run_date, tester=args.tester
+                    row,
+                    platform=args.platform,
+                    run_date=args.run_date,
+                    tester=args.tester,
+                    infiniops_commit=args.infiniops_commit,
+                    infinirt_commit=args.infinirt_commit,
                 )
             )
 

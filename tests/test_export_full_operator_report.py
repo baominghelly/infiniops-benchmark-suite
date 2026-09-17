@@ -57,6 +57,8 @@ class ExportFullOperatorReportTests(unittest.TestCase):
             platform="nvidia",
             run_date="2026/08/30",
             tester="baoming",
+            infiniops_commit="1111111111111111111111111111111111111111",
+            infinirt_commit="2222222222222222222222222222222222222222",
         )
 
         self.assertEqual(list(row), PLATFORM_FIELDS)
@@ -64,6 +66,12 @@ class ExportFullOperatorReportTests(unittest.TestCase):
         self.assertEqual(row["category_code"], "linalg")
         self.assertNotEqual(row["ic_tflops"], "NA")
         self.assertIn("implementation=torch-backend", row["remarks"])
+        self.assertEqual(
+            row["infiniops_commit"], "1111111111111111111111111111111111111111"
+        )
+        self.assertEqual(
+            row["infinirt_commit"], "2222222222222222222222222222222222222222"
+        )
 
     def test_linear_uses_transposed_weight_shape_for_tflops(self):
         row = platform_row(
@@ -183,11 +191,17 @@ class ExportFullOperatorReportTests(unittest.TestCase):
                     str(diagnostics),
                     "--report",
                     str(report),
+                    "--infiniops-commit",
+                    "3333333333333333333333333333333333333333",
+                    "--infinirt-commit",
+                    "4444444444444444444444444444444444444444",
                 ]
             )
 
             self.assertEqual(exit_code, 0)
             with output.open(encoding="utf-8", newline="") as handle:
+                self.assertEqual(next(csv.reader(handle)), PLATFORM_FIELDS)
+                handle.seek(0)
                 success_rows = list(csv.DictReader(handle))
             with diagnostics.open(encoding="utf-8", newline="") as handle:
                 diagnostic_rows = list(csv.DictReader(handle))
@@ -195,6 +209,14 @@ class ExportFullOperatorReportTests(unittest.TestCase):
                 self.assertEqual(next(csv.reader(handle)), DIAGNOSTIC_FIELDS)
             self.assertEqual(len(success_rows), 1)
             self.assertEqual(success_rows[0]["category_code"], "math")
+            self.assertEqual(
+                success_rows[0]["infiniops_commit"],
+                "3333333333333333333333333333333333333333",
+            )
+            self.assertEqual(
+                success_rows[0]["infinirt_commit"],
+                "4444444444444444444444444444444444444444",
+            )
             self.assertEqual(len(diagnostic_rows), 1)
             self.assertIn("Successful comparable cases: 1", report.read_text(encoding="utf-8"))
 

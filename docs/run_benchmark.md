@@ -117,6 +117,16 @@ Directory names do not include the time of day. The complete
 metadata. A non-empty deterministic run directory is rejected by default;
 pass `REUSE_RUN_DIR=1` only when replacing a failed or superseded attempt.
 
+Every exported operator row includes two provenance columns:
+
+```text
+infiniops_commit
+infinirt_commit
+```
+
+The values are the full Git commit IDs used by the platform runner. Older or
+direct exporter invocations that do not provide these values export `NA`.
+
 ## Why platform adapters remain
 
 The unified entry point centralizes device selection and delivery paths, but
