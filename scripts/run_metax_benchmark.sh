@@ -21,7 +21,7 @@ backfill_date="${BACKFILL_DATE:-}"
 infiniops_ref="${INFINIOPS_REF:-}"
 infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-metax-c550}"
-output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data}"
+output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data/ops}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
 read -r -a dtypes <<<"${dtypes_input//,/ }"
 for dtype in "${dtypes[@]}"; do

@@ -59,7 +59,8 @@ tree have identical content when compilation is skipped.
 One invocation performs these steps:
 
 1. Validate parameters and acquire the machine-level runner lock.
-2. Create the canonical output directory under `/data-aisoft/infinibench_data`.
+2. Create the canonical operator output directory under
+   `/data-aisoft/infinibench_data/ops`.
 3. Prepare `InfiniOps` and `InfiniRT` in the container.
 4. Select a physical C550 according to the configured resource gate.
 5. Build InfiniOps inside the container with the selected InfiniRT source tree.
@@ -85,25 +86,25 @@ There are two time concepts:
 A normal output directory is:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/<EXECUTION_TIME>/
+/data-aisoft/infinibench_data/ops/metax-c550/<EXECUTION_TIME>/
 ```
 
 For example:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/20260916-083000/
+/data-aisoft/infinibench_data/ops/metax-c550/20260916-083000/
 ```
 
 A backfill output directory is:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/backfill-<YYYYMMDD>-<EXECUTION_TIME>/
+/data-aisoft/infinibench_data/ops/metax-c550/backfill-<YYYYMMDD>-<EXECUTION_TIME>/
 ```
 
 For example:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/backfill-20260911-20260916-083000/
+/data-aisoft/infinibench_data/ops/metax-c550/backfill-20260911-20260916-083000/
 ```
 
 The CSV `date` column is the actual execution date for a normal run and the
@@ -274,7 +275,7 @@ validation. `decode-8k` and `prefill-4k` are optional shape-specific profiles.
 | `INFINIOPS_BUILD_DIR` | `/workspace/.cache/infiniops-build` | Persistent scikit-build directory. |
 | `CONTAINER` | `baoming_infiniops_metax` | Docker container used for compilation and benchmarks. |
 | `DEVICE_ID` | `metax-c550` | Device directory name under the output root. |
-| `OUTPUT_ROOT` | `/data-aisoft/infinibench_data` | Host canonical output root. |
+| `OUTPUT_ROOT` | `/data-aisoft/infinibench_data/ops` | Host canonical operator output root. |
 | `CONTAINER_OUTPUT_ROOT` | Same as `OUTPUT_ROOT` | Output root visible inside the container. |
 | `CONTAINER_BENCHMARK_ROOT` | `/data-aisoft/infinibench-scripts` | Shared benchmark tool root inside the container. |
 | `INFINIOPS_SOURCE_ROOT` | `/workspace/InfiniOps` | InfiniOps source path inside the container. |
@@ -396,7 +397,7 @@ Remember that shared-device latency is not comparable.
 Another MetaX runner is active and holds:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/.infinibench-runner.lock
+/data-aisoft/infinibench_data/ops/metax-c550/.infinibench-runner.lock
 ```
 
 Wait for the active run to finish instead of removing the lock manually.

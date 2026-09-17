@@ -13,7 +13,15 @@ and PyTorch comparisons on accelerator runtimes.
 - `scripts/classify_operator_semantics_9cat.py`: compact nine-category
   classification used by report exports.
 - Platform runners under `scripts/run_*_benchmark.sh`.
+- `docs/run_nvidia_benchmark.md`: complete NVIDIA A100 runner operations guide.
 - `docs/run_metax_benchmark.md`: complete MetaX runner operations guide.
+- `docs/run_hygon_benchmark.md`: complete Hygon BW1000 runner operations guide.
+- `docs/run_moore_benchmark.md`: complete Moore Threads MTT S5000 runner
+  operations guide.
+- `docs/run_cambricon_benchmark.md`: complete Cambricon MLU590 runner
+  operations guide.
+- `docs/run_tianshu58_benchmark.md`: complete Tianshu/Iluvatar TG150 runner
+  operations guide with device ID `iluvatar-tg150`.
 - Regression tests under `tests/`.
 
 The exported platform CSV contains:
@@ -48,6 +56,13 @@ Platform-specific runners may require environment variables or arguments for
 the container name and physical device index. Inspect the runner header before
 using it on a new machine.
 
+`run_a100_benchmark.sh` is a host-side orchestrator for the A100 machine. It
+uses host `docker`, `nvidia-smi`, and `/proc` access to enforce GPU resource
+gates and attribute compute processes. Source preparation, compilation,
+benchmarking, and export run inside the configured Docker container. See
+[docs/run_nvidia_benchmark.md](docs/run_nvidia_benchmark.md) for source
+backfill, GPU thresholds, output contracts, monitoring, and troubleshooting.
+
 `run_metax_benchmark.sh` is a host-side orchestrator. It uses host `docker`,
 `mx-smi`, and `/proc` access to select a device and attribute GPU processes,
 but compilation and benchmark execution always run inside the configured Docker
@@ -57,6 +72,17 @@ See [docs/run_metax_benchmark.md](docs/run_metax_benchmark.md) for the complete
 MetaX runner guide, including source backfill, GPU resource gates, output
 contracts, monitoring commands, and troubleshooting.
 
+`run_hygon_benchmark.sh` is the corresponding host-side orchestrator for the
+Hygon BW1000/DCU machine. It uses host `docker`, `rocm-smi`, and `/proc` access
+for HCU selection and process attribution. See
+[docs/run_hygon_benchmark.md](docs/run_hygon_benchmark.md) for the complete
+Hygon runner guide, including InfiniRT installation, source backfill, GPU
+resource gates, output contracts, and troubleshooting.
+
+See [docs/run_moore_benchmark.md](docs/run_moore_benchmark.md) for the complete
+Moore Threads MTT S5000 runner guide, including source backfill, MUSA device
+selection, GPU resource gates, output contracts, and troubleshooting.
+
 On the MetaX machine, deploy the suite under the shared NFS entry:
 
 ```text
@@ -65,8 +91,8 @@ On the MetaX machine, deploy the suite under the shared NFS entry:
 
 The frontend or another user's agent should invoke the host-side runner from
 that shared path rather than from a user's home directory. Keep the scripts tree
-read-only to benchmark callers; result files still belong under
-`/data-aisoft/infinibench_data/`.
+read-only to benchmark callers; operator result files still belong under
+`/data-aisoft/infinibench_data/ops/`.
 
 ### Source update and backfill
 
@@ -173,13 +199,13 @@ representative set spanning all nine semantic categories. Override it with
 Canonical raw and final results are written directly to:
 
 ```text
-/data-aisoft/infinibench_data/metax-c550/<date>/
+/data-aisoft/infinibench_data/ops/metax-c550/<date>/
 ```
 
 The runner then exports one combined CSV and diagnostics table at that
 date-root level. Rows are distinguished by their `dtype` column.
 
-The host path `/data-aisoft/infinibench_data` and the same path inside the
+The host path `/data-aisoft/infinibench_data/ops` and the same path inside the
 container must refer to the same bind mount. `OUTPUT_ROOT` and
 `CONTAINER_OUTPUT_ROOT` remain available for environments that cannot mount
 that canonical path.
