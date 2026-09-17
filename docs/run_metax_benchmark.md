@@ -98,19 +98,25 @@ For example:
 A backfill output directory is:
 
 ```text
-/data-aisoft/infinibench_data/ops/metax-c550/backfill-<YYYYMMDD>-<EXECUTION_TIME>/
+/data-aisoft/infinibench_data/ops/metax-c550/backfill-<YYYYMMDD>-<EXECUTION_DATE>/
 ```
 
 For example:
 
 ```text
-/data-aisoft/infinibench_data/ops/metax-c550/backfill-20260911-20260916-083000/
+/data-aisoft/infinibench_data/ops/metax-c550/backfill-20260911-20260916/
 ```
 
 The CSV `date` column is the actual execution date for a normal run and the
 backfill target date for a backfill run. `RUN_DATE` and `CSV_DATE` are not
 accepted. If a scheduler needs a deterministic output path, set `EXECUTION_TIME`
 explicitly before launching the command.
+
+A backfill directory is intentionally deterministic for one target date and one
+execution date. A non-empty directory with the same name causes the runner to
+exit instead of mixing stale checkpoints into a new attempt. To replace a failed
+or superseded attempt in the same fixed directory, set `REUSE_RUN_DIR=1`; this
+deletes and recreates only that run directory after the machine lock is held.
 
 ## Source preparation and backfill
 
@@ -256,6 +262,7 @@ validation. `decode-8k` and `prefill-4k` are optional shape-specific profiles.
 | `PROFILES` | `decode-4k` | Profiles to benchmark in one invocation. |
 | `EXECUTION_TIME` | Current local time | Actual execution time and output label, `YYYYMMDD-HHMMSS`. |
 | `BACKFILL_DATE` | empty | Historical source date, `YYYY-MM-DD`. |
+| `REUSE_RUN_DIR` | `0` | Allow a deterministic backfill run to replace its existing fixed output directory. |
 | `BUILD_INFINIOPS` | `1` | Build and install InfiniOps before benchmarking. |
 | `UPDATE_SOURCES` | `1` | Clone/fetch/check out source repositories. |
 | `INFINIOPS_REF` | empty | Explicit InfiniOps commit, tag, or branch. |

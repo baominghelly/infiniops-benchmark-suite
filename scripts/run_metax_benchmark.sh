@@ -14,10 +14,12 @@ gpu_busy=""
 gpu_rejected=""
 
 execution_time="${EXECUTION_TIME:-$(date +%Y%m%d-%H%M%S)}"
+execution_date="${execution_time:0:8}"
 tester="${TESTER:-baoming}"
 build_infiniops="${BUILD_INFINIOPS:-1}"
 update_sources="${UPDATE_SOURCES:-1}"
 backfill_date="${BACKFILL_DATE:-}"
+reuse_run_dir="${REUSE_RUN_DIR:-0}"
 infiniops_ref="${INFINIOPS_REF:-}"
 infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-metax-c550}"
@@ -69,7 +71,7 @@ if [[ ! "$execution_time" =~ ^[0-9]{8}-[0-9]{6}$ ]] || ! date -d "$execution_tim
   exit 2
 fi
 if [[ -n "$backfill_date" ]]; then
-  run_date="backfill-${backfill_date//-/}-${execution_time}"
+  run_date="backfill-${backfill_date//-/}-${execution_date}"
   csv_date="${backfill_date//-//}"
 else
   run_date="$execution_time"
@@ -80,6 +82,13 @@ case "$update_sources" in
   0|1) ;;
   *)
     echo "invalid UPDATE_SOURCES: $update_sources; expected 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "$reuse_run_dir" in
+  0|1) ;;
+  *)
+    echo "invalid REUSE_RUN_DIR: $reuse_run_dir; expected 0 or 1" >&2
     exit 2
     ;;
 esac
@@ -150,6 +159,27 @@ exec 9>"$runner_lock"
 if ! flock -n 9; then
   echo "another MetaX benchmark runner is active: $runner_lock" >&2
   exit 2
+fi
+
+# A backfill directory is deterministic: one target date plus one execution
+# date. Refuse to mix a new attempt with stale checkpoint files. Setting
+# REUSE_RUN_DIR=1 explicitly replaces that fixed directory for a retry.
+if [[ -e "$output_host" ]] && [[ "$reuse_run_dir" != "1" ]]; then
+  if [[ -n "$(find "$output_host" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    echo "output directory already exists and is non-empty: $output_host" >&2
+    echo "set REUSE_RUN_DIR=1 to replace it for the same backfill/execution date pair" >&2
+    exit 2
+  fi
+fi
+if [[ "$reuse_run_dir" == "1" && -e "$output_container" ]]; then
+  case "$output_container" in
+    /data-aisoft/infinibench_data/ops/*/*) ;;
+    *)
+      echo "refusing to reset untrusted output path: $output_container" >&2
+      exit 2
+      ;;
+  esac
+  docker exec "$container" rm -rf -- "$output_container"
 fi
 
 # Create the run directory from the container so a shared frontend/agent
