@@ -1,0 +1,14 @@
+diff --git a/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h b/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
+--- a/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
++++ b/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
+@@ -54,7 +54,9 @@ class CudaPagedAttentionPrefillInfinilm {
+           constexpr int kHeadSize = ListGet<2>(list_tag);
+ 
+           if constexpr (kHeadSize == 128) {
+-            if (block_size_ == 256) {
++            // MUSA devices with a 28 KiB shared-memory limit cannot compile the
++            // 36,896-byte pipelined kernel. Always use the global-memory path.
++            if constexpr (false) {
+               constexpr int kWarps = 8;
+               dim3 pipe_grid(static_cast<unsigned>(num_heads_),
+                              static_cast<unsigned>(num_seqs_),

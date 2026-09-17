@@ -12,6 +12,7 @@ and PyTorch comparisons on accelerator runtimes.
 - `scripts/classify_operator_semantics.py`: detailed semantic classification.
 - `scripts/classify_operator_semantics_9cat.py`: compact nine-category
   classification used by report exports.
+- `scripts/run_benchmark.sh`: unified seven-platform benchmark entry point.
 - Platform runners under `scripts/run_*_benchmark.sh`.
 - `docs/run_nvidia_benchmark.md`: complete NVIDIA A100 runner operations guide.
 - `docs/run_metax_benchmark.md`: complete MetaX runner operations guide.
@@ -49,6 +50,11 @@ The tests do not require an accelerator. They cover result parsing, report
 schema generation, operator recipes, and semantic category mapping.
 
 ## Accelerator Runs
+
+Use [scripts/run_benchmark.sh](scripts/run_benchmark.sh) as the common entry
+point for supported devices. It selects the platform runner from `DEVICE` or its
+first argument and applies the shared operator output contract. See
+[docs/run_benchmark.md](docs/run_benchmark.md) for the device map and examples.
 
 Accelerator runs require an already prepared environment containing InfiniOps,
 InfiniRT, PyTorch, the accelerator runtime, and generated InfiniOps metadata.

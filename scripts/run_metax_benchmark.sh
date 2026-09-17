@@ -74,7 +74,7 @@ if [[ -n "$backfill_date" ]]; then
   run_date="backfill-${backfill_date//-/}-${execution_date}"
   csv_date="${backfill_date//-//}"
 else
-  run_date="$execution_time"
+  run_date="$execution_date"
   csv_date="${execution_time:0:4}/${execution_time:4:2}/${execution_time:6:2}"
 fi
 

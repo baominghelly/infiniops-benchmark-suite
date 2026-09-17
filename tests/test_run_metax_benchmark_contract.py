@@ -26,6 +26,7 @@ class RunMetaXBenchmarkContractTests(unittest.TestCase):
             "backfill-<YYYYMMDD>-<EXECUTION_DATE>/",
             self.guide,
         )
+        self.assertIn('run_date="$execution_date"', self.script)
 
     def test_existing_backfill_directory_is_not_reused_silently(self):
         self.assertIn('reuse_run_dir="${REUSE_RUN_DIR:-0}"', self.script)

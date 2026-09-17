@@ -83,16 +83,16 @@ There are two time concepts:
   can be overridden as `YYYYMMDD-HHMMSS`.
 - `BACKFILL_DATE`: optional historical source date in `YYYY-MM-DD` format.
 
-A normal output directory is:
+A normal output directory uses the execution date:
 
 ```text
-/data-aisoft/infinibench_data/ops/metax-c550/<EXECUTION_TIME>/
+/data-aisoft/infinibench_data/ops/metax-c550/<EXECUTION_DATE>/
 ```
 
 For example:
 
 ```text
-/data-aisoft/infinibench_data/ops/metax-c550/20260916-083000/
+/data-aisoft/infinibench_data/ops/metax-c550/20260916/
 ```
 
 A backfill output directory is:
@@ -260,7 +260,7 @@ validation. `decode-8k` and `prefill-4k` are optional shape-specific profiles.
 |---|---:|---|
 | `DTYPES` | `float16,float32,bfloat16` | Dtypes to benchmark in one invocation. |
 | `PROFILES` | `decode-4k` | Profiles to benchmark in one invocation. |
-| `EXECUTION_TIME` | Current local time | Actual execution time and output label, `YYYYMMDD-HHMMSS`. |
+| `EXECUTION_TIME` | Current local time | Actual execution time, `YYYYMMDD-HHMMSS`; its date part is the normal output label. |
 | `BACKFILL_DATE` | empty | Historical source date, `YYYY-MM-DD`. |
 | `REUSE_RUN_DIR` | `0` | Allow a deterministic backfill run to replace its existing fixed output directory. |
 | `BUILD_INFINIOPS` | `1` | Build and install InfiniOps before benchmarking. |
