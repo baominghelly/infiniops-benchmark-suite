@@ -127,6 +127,22 @@ infinirt_commit
 The values are the full Git commit IDs used by the platform runner. Older or
 direct exporter invocations that do not provide these values export `NA`.
 
+If a platform runner fails after some operators have completed, it exports the
+available successful rows to a partial CSV:
+
+```text
+<device>.partial.csv
+diagnostics.partial.csv
+report.partial.md
+partial-manifest.json
+```
+
+The partial exporter reads both completed `results.json` files and interrupted
+`results.jsonl` checkpoints, ignores a truncated final JSONL line, and dedupes
+rows using the normal exporter rules. Partial CSVs are useful for debugging and
+coverage inspection, but are not complete benchmark deliveries and must not be
+treated as full-run latency comparisons.
+
 ## Why platform adapters remain
 
 The unified entry point centralizes device selection and delivery paths, but

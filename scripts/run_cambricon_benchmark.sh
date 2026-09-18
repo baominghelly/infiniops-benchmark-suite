@@ -131,6 +131,7 @@ runner_lock="$output_root/$device_id/.infinibench-runner.lock"
 runner_lock_container="$output_container_root/$device_id/.infinibench-runner.lock"
 harness="$container_tools_root/scripts/full_operator_benchmark.py"
 exporter="$container_tools_root/scripts/export_full_operator_report.py"
+partial_exporter="$container_tools_root/scripts/export_partial_results.py"
 mlu_audit="$host_tools_root/scripts/cambricon_mlu_audit.py"
 launcher_log="$output_host/benchmark-launcher.log"
 monitor_log="$output_host/benchmark-monitor.log"
@@ -232,6 +233,7 @@ finish() {
 trap finish EXIT
 docker exec "$container" test -f "$harness"
 docker exec "$container" test -f "$exporter"
+docker exec "$container" test -f "$partial_exporter"
 # Verify that the host and container output roots resolve to the same bind
 # mount. The container owns the run directory on NFS, so create and remove the
 # marker from the container. A host-side unlink can fail with EPERM in a sticky
@@ -628,6 +630,44 @@ else
   echo "no result JSON files were available for export" | tee -a "$launcher_log"
   exit_code=1
 fi
+
+if [[ "$exit_code" -ne 0 || -s "$foreign_flag" ]]; then
+  if docker exec "$container" python3 -c '
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+found = any(path.name in {"results.json", "results.jsonl"} for path in root.rglob("*") if path.is_file())
+raise SystemExit(0 if found else 1)
+' "$output_container"; then
+    if [[ -s "$foreign_flag" ]]; then
+      partial_failure_category=foreign_process
+      partial_failure_reason="foreign process detected during benchmark"
+    else
+      partial_failure_category=benchmark_failure
+      partial_failure_reason="runner exit code $exit_code"
+    fi
+    echo "=== partial export start=$(date --iso-8601=seconds) ===" | tee -a "$launcher_log"
+    partial_exit=0
+    docker exec "$container" python3 "$partial_exporter" \
+      --output-root "$output_container" \
+      --output-name "infiniops-cambricon-mlu590.csv" \
+      --platform cambricon \
+      --date "$csv_date" \
+      --tester "$tester" \
+      --infiniops-commit "$sha" \
+      --infinirt-commit "$infinirt_sha" \
+      --failure-category "$partial_failure_category" \
+      --failure-reason "$partial_failure_reason" \
+      2>&1 | tee -a "$launcher_log" || partial_exit=$?
+    if [[ "$partial_exit" -eq 0 ]]; then
+      echo "partial_csv=$output_container/infiniops-cambricon-mlu590.partial.csv" | tee -a "$launcher_log"
+    else
+      echo "partial_export_failed=$partial_exit" | tee -a "$launcher_log"
+    fi
+  else
+    echo "partial_export_skipped=no complete or checkpoint result files" | tee -a "$launcher_log"
+  fi
+fi
+
 {
   echo "=== post-run cnmon ==="
   cnmon all -c "$physical_mlu"

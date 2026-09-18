@@ -33,6 +33,11 @@ pt_latency_us,pt_tflops,date,tester,remarks,category_code,
 infiniops_commit,infinirt_commit
 ```
 
+Failed platform runs that contain completed operators also export
+`*.partial.csv`, `diagnostics.partial.csv`, and `partial-manifest.json` from
+their available result checkpoints. Partial files are debugging artifacts and
+are not treated as complete benchmark deliveries.
+
 `category_code` uses:
 
 ```text

@@ -81,8 +81,25 @@ _MATRIX_OPS = {
 def _load_rows(paths: Iterable[Path]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in paths:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        rows.extend(payload.get("results", []))
+        if path.suffix == ".jsonl":
+            # The parent process appends one result per line as workers finish.
+            # A hard interruption can leave the final line truncated, so skip
+            # malformed trailing data instead of losing every earlier result.
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and row.get("record_type") == "result":
+                    rows.append(row)
+        else:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                # A hard interruption can truncate a results.json write. The
+                # matching results.jsonl checkpoint usually remains readable.
+                continue
+            rows.extend(payload.get("results", []))
     return rows
 
 
