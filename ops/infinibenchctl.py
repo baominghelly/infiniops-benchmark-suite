@@ -299,10 +299,12 @@ for entry in os.scandir('/proc'):
 """
     command = ["docker", "exec", container, "python3", "-c", script, "--", output_dir]
     if remote:
-        command = ["ssh", "-o", "BatchMode=yes", METAX_SSH, *command]
+        remote_command = " ".join(shlex.quote(item) for item in command)
+        command = ["ssh", "-o", "BatchMode=yes", METAX_SSH, remote_command]
     completed = run_command(command)
-    if completed.stdout.strip():
-        print(completed.stdout.strip())
+    output = completed.stdout or ""
+    if output.strip():
+        print(output.strip())
 
 
 def mark_worker_stopped(path: Path, reason: str) -> None:
