@@ -1,0 +1,13 @@
+schema_version: 1
+schedule:
+  enabled: false
+  mode: manual
+  timezone: Asia/Shanghai
+source:
+  infiniopts_repo: https://github.com/InfiniTensor/InfiniOps.git
+  infinirt_repo: https://github.com/InfiniTensor/InfiniRT.git
+  ref: master
+benchmark:
+  dtypes: [float16, float32, bfloat16]
+  profiles: [decode-4k]
+platforms: [nvidia-a100, metax-c550]

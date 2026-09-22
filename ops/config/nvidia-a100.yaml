@@ -1,0 +1,7 @@
+device: nvidia-a100
+role: [global-master, platform-worker]
+transport: shared-nfs
+schedule_enabled: false
+adapter: hermes/run-nvidia-a100-benchmark.sh
+container: baoming_infiniops
+output_root: /data-aisoft/infinibench_data/ops

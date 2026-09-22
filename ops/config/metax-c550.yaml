@@ -1,0 +1,10 @@
+device: metax-c550
+role: [platform-worker]
+transport: shared-nfs
+schedule_enabled: false
+adapter: hermes/run-metax-c550-weekly.sh
+container: baoming_infiniops_metax
+source_roots:
+  infiniopts: /workspace/InfiniOps
+  infinirt: /workspace/InfiniRT
+output_root: /data-aisoft/infinibench_data/ops
