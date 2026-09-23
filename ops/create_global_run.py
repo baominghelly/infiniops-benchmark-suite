@@ -44,13 +44,20 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def resolve_commit(repository: str, requested_ref: str) -> str:
     if COMMIT_RE.fullmatch(requested_ref):
         return requested_ref.lower()
-    result = subprocess.run(
-        ["git", "ls-remote", repository, requested_ref],
-        check=False,
-        text=True,
-        capture_output=True,
-        timeout=90,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", repository, requested_ref],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout = exc.timeout or 90
+        raise RuntimeError(
+            f"timed out after {timeout:g}s resolving {requested_ref!r} "
+            f"from {repository}"
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"unable to resolve {requested_ref!r} in {repository}: "

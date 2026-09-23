@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+import subprocess
 import tempfile
 from unittest import mock
 
@@ -27,6 +28,24 @@ class InfiniBenchControlContractTests(unittest.TestCase):
         )
         self.assertEqual(args.profile, "decode-4k-small")
         self.assertEqual(args.dtypes, "float16,float32,bfloat16")
+
+    def test_manifest_creator_captures_candidate_output_for_fallback(self):
+        args = type("Args", (), {
+            "global_run_id": "20260923-daily",
+            "execution_time": "20260923-020000",
+            "schedule_mode": "daily",
+            "dtypes": "float16,float32,bfloat16",
+            "profile": "decode-4k",
+            "device": ["nvidia-a100"],
+            "infiniops_ref": "master",
+            "infinirt_ref": "master",
+            "infiniops_commit": "a" * 40,
+            "infinirt_commit": "b" * 40,
+        })()
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(ctl, "run_command", return_value=completed) as runner:
+            ctl.create_manifest(args)
+        self.assertTrue(runner.call_args.kwargs["capture"])
 
     def test_pause_and_resume_use_shared_control_marker(self):
         with tempfile.TemporaryDirectory() as directory:

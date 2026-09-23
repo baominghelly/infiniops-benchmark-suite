@@ -131,8 +131,8 @@ def create_manifest(args: argparse.Namespace) -> None:
             command += ["--infinirt-commit", args.infinirt_commit]
         else:
             command += ["--infinirt-ref", args.infinirt_ref]
-        completed = run_command(command)
-        last_output = (completed.stdout + completed.stderr).strip()
+        completed = run_command(command, capture=True)
+        last_output = ((completed.stdout or "") + (completed.stderr or "")).strip()
         if completed.returncode == 0:
             print(last_output)
             return
