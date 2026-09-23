@@ -73,7 +73,13 @@ def run_command(command: list[str], *, capture: bool = False) -> subprocess.Comp
 
 
 def worker_manifest_path(device: str, global_run_id: str) -> Path:
-    return WORKER_ROOT / device / global_run_id / "worker-manifest.json"
+    return device_worker_root(device) / device / global_run_id / "worker-manifest.json"
+
+
+def device_worker_root(device: str) -> Path:
+    if device == "nvidia-a100":
+        return Path("/data-aisoft/baoming/hermes/runs/global-workers")
+    return WORKER_ROOT
 
 
 def safe_run_id(value: str) -> None:
@@ -84,6 +90,37 @@ def safe_run_id(value: str) -> None:
 
 
 def create_manifest(args: argparse.Namespace) -> None:
+    manifest_path = (
+        RUNS_ROOT / args.global_run_id / "global-manifest.json"
+    )
+    if manifest_path.exists():
+        existing = read_json(manifest_path)
+        expected = {
+            "global_run_id": args.global_run_id,
+            "execution_time": args.execution_time,
+            "platforms": args.device,
+        }
+        for key, value in expected.items():
+            if existing.get(key) != value:
+                raise RuntimeError(f"existing global run has different {key}: {manifest_path}")
+        if existing.get("schedule", {}).get("mode") != args.schedule_mode:
+            raise RuntimeError(f"existing global run has different schedule mode: {manifest_path}")
+        if existing.get("benchmark", {}).get("dtypes") != [
+            item.strip() for item in args.dtypes.split(",") if item.strip()
+        ]:
+            raise RuntimeError(f"existing global run has different dtypes: {manifest_path}")
+        if existing.get("benchmark", {}).get("profiles") != [
+            item.strip() for item in args.profile.split(",") if item.strip()
+        ]:
+            raise RuntimeError(f"existing global run has different profiles: {manifest_path}")
+        if args.infiniops_commit and existing.get("source", {}).get("infiniops_commit") != args.infiniops_commit:
+            raise RuntimeError(f"existing global run has different InfiniOps commit: {manifest_path}")
+        if args.infinirt_commit and existing.get("source", {}).get("infinirt_commit") != args.infinirt_commit:
+            raise RuntimeError(f"existing global run has different InfiniRT commit: {manifest_path}")
+        print(f"idempotent=true manifest={manifest_path}")
+        print(f"infiniops_commit={existing['source']['infiniops_commit']}")
+        print(f"infinirt_commit={existing['source']['infinirt_commit']}")
+        return
     common = [
         "--global-run-id",
         args.global_run_id,
@@ -162,6 +199,8 @@ def launch_device(
                 "python3",
                 "/opt/data/scripts/run_platform_worker.py",
                 *common,
+                "--worker-root",
+                "/data-aisoft/baoming/hermes/runs/global-workers",
                 "--adapter",
                 "/opt/data/scripts/run-nvidia-a100-benchmark.sh",
             ]
@@ -371,9 +410,9 @@ def stop_worker(device: str, global_run_id: str) -> dict[str, Any]:
 def active_worker_runs() -> list[tuple[str, str]]:
     result = []
     for device in DEVICES:
-        if not (WORKER_ROOT / device).is_dir():
+        if not device_worker_root(device).is_dir():
             continue
-        for directory in (WORKER_ROOT / device).iterdir():
+        for directory in device_worker_root(device).iterdir():
             path = directory / "worker-manifest.json"
             if not path.is_file():
                 continue
@@ -432,7 +471,7 @@ def command_status(_: argparse.Namespace) -> int:
     }
     for device in DEVICES:
         rows = []
-        root = WORKER_ROOT / device
+        root = device_worker_root(device)
         if root.is_dir():
             for directory in root.iterdir():
                 path = directory / "worker-manifest.json"
