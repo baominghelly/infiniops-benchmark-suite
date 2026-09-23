@@ -23,9 +23,33 @@ RELEASE_ROOT = "/data-aisoft/infinibench-releases/infinibench-ops-27c5038-v1"
 RELEASE_SHA256 = "37e0f533ba69957145c55eb9c3143990f8360ba4dda955fd14fd0b616d793726"
 HERMES = "baoming_hermes_agent"
 NVIDIA_CONTAINER = "baoming_infiniops"
-METAX_SSH = "metax"
-METAX_CONTAINER = "baoming_infiniops_metax"
-DEVICES = ("nvidia-a100", "metax-c550")
+REMOTE_WORKERS = {
+    "metax-c550": {
+        "ssh": "metax",
+        "container": "baoming_infiniops_metax",
+        "worker": "/data-aisoft/baoming/infinibench-workers/metax-c550/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/metax-c550/bin/run-metax-c550-weekly.sh",
+    },
+    "ascend-910c": {
+        "ssh": "ascend245",
+        "container": "infiniops-ascend910c-245",
+        "worker": "/data-aisoft/baoming/infinibench-workers/ascend-910c/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/ascend-910c/bin/run-ascend-910c.sh",
+    },
+    "moore-s5000": {
+        "ssh": "moore97",
+        "container": "baoming_infiniops_moore",
+        "worker": "/data-aisoft/baoming/infinibench-workers/moore-s5000/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/moore-s5000/bin/run-moore-s5000.sh",
+    },
+    "iluvatar-tg150": {
+        "ssh": "tianshu58",
+        "container": "infinibench-stack-20260724-iluvatar",
+        "worker": "/data-aisoft/baoming/infinibench-workers/iluvatar-tg150/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/iluvatar-tg150/bin/run-iluvatar-tg150.sh",
+    },
+}
+DEVICES = ("nvidia-a100", *REMOTE_WORKERS)
 
 
 def beijing_now() -> dt.datetime:
@@ -253,8 +277,9 @@ def launch_device(
             "returncode": completed.returncode,
         }
 
-    remote_worker = "/data-aisoft/baoming/infinibench-workers/metax-c550/bin/run_platform_worker.py"
-    remote_adapter = "/data-aisoft/baoming/infinibench-workers/metax-c550/bin/run-metax-c550-weekly.sh"
+    remote = REMOTE_WORKERS[device]
+    remote_worker = remote["worker"]
+    remote_adapter = remote["adapter"]
     log_dir = "/data-aisoft/baoming/infinibench-ops/remote-launch"
     remote_arguments = [
         "python3",
@@ -272,7 +297,7 @@ def launch_device(
         + f"echo $! > {shlex.quote(f'{log_dir}/{global_run_id}.pid')}"
     )
     completed = run_command(
-        ["ssh", "-o", "BatchMode=yes", METAX_SSH, remote_command]
+        ["ssh", "-o", "BatchMode=yes", remote["ssh"], remote_command]
     )
     completed_output = ((completed.stdout or "") + (completed.stderr or "")).strip()
     if completed.returncode != 0:
@@ -346,7 +371,12 @@ def command_resume(_: argparse.Namespace) -> int:
     return 0
 
 
-def target_benchmark_processes(container: str, output_dir: str, *, remote: bool = False) -> None:
+def target_benchmark_processes(
+    container: str,
+    output_dir: str,
+    *,
+    remote_host: str | None = None,
+) -> None:
     # Keep the exact process filter simple and auditable.
     script = r"""
 import os, sys
@@ -370,9 +400,9 @@ for entry in os.scandir('/proc'):
             pass
 """
     command = ["docker", "exec", container, "python3", "-c", script, "--", output_dir]
-    if remote:
+    if remote_host:
         remote_command = " ".join(shlex.quote(item) for item in command)
-        command = ["ssh", "-o", "BatchMode=yes", METAX_SSH, remote_command]
+        command = ["ssh", "-o", "BatchMode=yes", remote_host, remote_command]
     completed = run_command(command)
     output = completed.stdout or ""
     if output.strip():
@@ -419,10 +449,15 @@ def stop_worker(device: str, global_run_id: str) -> dict[str, Any]:
         if pid:
             run_command(["docker", "exec", HERMES, "kill", "-TERM", str(pid)])
     else:
-        target_benchmark_processes(METAX_CONTAINER, output_dir, remote=True)
+        remote = REMOTE_WORKERS[device]
+        target_benchmark_processes(
+            remote["container"],
+            output_dir,
+            remote_host=remote["ssh"],
+        )
         pid = payload.get("pid")
         if pid:
-            run_command(["ssh", "-o", "BatchMode=yes", METAX_SSH, "kill", "-TERM", str(pid)])
+            run_command(["ssh", "-o", "BatchMode=yes", remote["ssh"], "kill", "-TERM", str(pid)])
 
     mark_worker_stopped(path, "infinibenchctl stop")
     result["action"] = "stopped"
@@ -433,9 +468,10 @@ def stop_worker(device: str, global_run_id: str) -> dict[str, Any]:
 def active_worker_runs() -> list[tuple[str, str]]:
     result = []
     for device in DEVICES:
-        if not device_worker_root(device).is_dir():
+        device_root = device_worker_root(device) / device
+        if not device_root.is_dir():
             continue
-        for directory in (device_worker_root(device) / device).iterdir():
+        for directory in device_root.iterdir():
             path = directory / "worker-manifest.json"
             if not path.is_file():
                 continue
@@ -492,9 +528,9 @@ def command_status(_: argparse.Namespace) -> int:
     }
     for device in DEVICES:
         rows = []
-        root = device_worker_root(device)
+        root = device_worker_root(device) / device
         if root.is_dir():
-            for directory in (root / device).iterdir():
+            for directory in root.iterdir():
                 path = directory / "worker-manifest.json"
                 if not path.is_file():
                     continue

@@ -84,6 +84,14 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
         metax = (ROOT / "hermes" / "run-metax-c550-weekly.sh").read_text(
             encoding="utf-8"
         )
+        for name in (
+            "run-ascend-910c.sh",
+            "run-iluvatar-tg150.sh",
+            "run-moore-s5000.sh",
+        ):
+            script = (ROOT / "hermes" / name).read_text(encoding="utf-8")
+            self.assertIn('export DEVICE="${BENCHMARK_DEVICE:-', script)
+            self.assertIn('runner="${BENCHMARK_RUNNER:-', script)
         for script in (nvidia, metax):
             self.assertIn('infiniops_ref="${INFINIOPS_REF:-}"', script)
             self.assertIn('infinirt_ref="${INFINIRT_REF:-}"', script)

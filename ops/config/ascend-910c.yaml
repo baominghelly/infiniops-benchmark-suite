@@ -1,0 +1,11 @@
+device: ascend-910c
+role: [platform-worker]
+transport: shared-nfs
+schedule_enabled: true
+periodic_worker:
+  interval_minutes: 5
+  heartbeat_stale_seconds: 120
+  max_auto_retries: 3
+adapter: hermes/run-ascend-910c.sh
+container: infiniops-ascend910c-245
+output_root: /data-aisoft/infinibench_data/ops

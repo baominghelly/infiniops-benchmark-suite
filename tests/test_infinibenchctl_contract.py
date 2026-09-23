@@ -33,6 +33,22 @@ class InfiniBenchControlContractTests(unittest.TestCase):
         self.assertEqual(args.profile, "decode-4k-small")
         self.assertEqual(args.dtypes, "float16,float32,bfloat16")
 
+    def test_daily_control_covers_all_deployed_workers(self):
+        self.assertEqual(
+            ctl.DEVICES,
+            (
+                "nvidia-a100",
+                "metax-c550",
+                "ascend-910c",
+                "moore-s5000",
+                "iluvatar-tg150",
+            ),
+        )
+        self.assertEqual(
+            sorted(ctl.REMOTE_WORKERS),
+            sorted(ctl.DEVICES[1:]),
+        )
+
     def test_manifest_creator_captures_candidate_output_for_fallback(self):
         args = type("Args", (), {
             "global_run_id": "20260923-daily",
@@ -100,6 +116,9 @@ class InfiniBenchControlContractTests(unittest.TestCase):
             )
             self.assertEqual(len(payload["workers"]["nvidia-a100"]), 1)
             self.assertEqual(len(payload["workers"]["metax-c550"]), 1)
+            self.assertEqual(len(payload["workers"]["ascend-910c"]), 1)
+            self.assertEqual(len(payload["workers"]["moore-s5000"]), 1)
+            self.assertEqual(len(payload["workers"]["iluvatar-tg150"]), 1)
 
 
 if __name__ == "__main__":

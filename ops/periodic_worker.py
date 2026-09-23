@@ -22,7 +22,10 @@ DEFAULT_RUNS_ROOT = Path("/data-aisoft/infinibench_data/ops/.runs")
 DEFAULT_CONTROL_ROOT = Path("/data-aisoft/infinibench_data/ops/.control")
 DEFAULT_WORKER_ROOT = Path("/data-aisoft/infinibench_data/ops/.workers")
 ADAPTERS = {
+    "ascend-910c": "run-ascend-910c.sh",
+    "iluvatar-tg150": "run-iluvatar-tg150.sh",
     "metax-c550": "run-metax-c550-weekly.sh",
+    "moore-s5000": "run-moore-s5000.sh",
     "nvidia-a100": "run-nvidia-a100-benchmark.sh",
 }
 

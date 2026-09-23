@@ -15,6 +15,9 @@ exec /data-aisoft/baoming/infinibench-ops/bin/infinibenchctl \
   run-once \
   --device nvidia-a100 \
   --device metax-c550 \
+  --device ascend-910c \
+  --device moore-s5000 \
+  --device iluvatar-tg150 \
   --global-run-id "${today}-daily" \
   --execution-time "${today}-020000" \
   --schedule-mode daily \

@@ -22,16 +22,40 @@ DEFAULT_RUNNER = "/data-aisoft/infinibench-scripts/scripts/run_benchmark.sh"
 HEARTBEAT_INTERVAL_SECONDS = 30
 HEARTBEAT_STALE_SECONDS = 120
 ADAPTERS = {
+    "ascend-910c": "run-ascend-910c.sh",
+    "iluvatar-tg150": "run-iluvatar-tg150.sh",
     "nvidia-a100": "run-nvidia-a100-benchmark.sh",
     "metax-c550": "run-metax-c550-weekly.sh",
+    "moore-s5000": "run-moore-s5000.sh",
 }
 PLATFORM_ENV = {
     "nvidia-a100": {},
+    "ascend-910c": {
+        "DEVICE": "ascend-910c",
+        "CONTAINER": "infiniops-ascend910c-245",
+        "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
+        "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
+        "INFINIOPS_BUILD_DIR": "/workspace/.cache/infiniops-build",
+    },
+    "iluvatar-tg150": {
+        "DEVICE": "iluvatar-tg150",
+        "CONTAINER": "infinibench-stack-20260724-iluvatar",
+        "INFINIOPS_SOURCE_ROOT": "/workspace/src/infinibench-git/InfiniOps",
+        "INFINIRT_SOURCE_ROOT": "/workspace/src/infinibench-git/InfiniRT",
+    },
     "metax-c550": {
+        "DEVICE": "metax-c550",
         "CONTAINER": "baoming_infiniops_metax",
         "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
         "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
         "INFINIOPS_BUILD_DIR": "/workspace/.cache/infiniops-build",
+    },
+    "moore-s5000": {
+        "DEVICE": "moore-s5000",
+        "CONTAINER": "baoming_infiniops_moore",
+        "GPU_ALLOW_OCCUPIED": "1",
+        "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
+        "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
     },
 }
 

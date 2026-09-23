@@ -6,6 +6,9 @@ root="/data-aisoft/baoming/infinibench-workers/${device}"
 case "$device" in
   metax-c550) adapter=run-metax-c550-weekly.sh ;;
   nvidia-a100) adapter=run-nvidia-a100-benchmark.sh ;;
+  ascend-910c) adapter=run-ascend-910c.sh ;;
+  iluvatar-tg150) adapter=run-iluvatar-tg150.sh ;;
+  moore-s5000) adapter=run-moore-s5000.sh ;;
   *) echo "unsupported periodic worker device: $device" >&2; exit 2 ;;
 esac
 mkdir -p "$root/logs"

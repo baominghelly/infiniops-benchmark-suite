@@ -1,0 +1,12 @@
+device: moore-s5000
+role: [platform-worker]
+transport: shared-nfs
+schedule_enabled: true
+periodic_worker:
+  interval_minutes: 5
+  heartbeat_stale_seconds: 120
+  max_auto_retries: 3
+adapter: hermes/run-moore-s5000.sh
+container: baoming_infiniops_moore
+gpu_allow_occupied: true
+output_root: /data-aisoft/infinibench_data/ops

@@ -1,0 +1,16 @@
+diff --git a/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h b/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
+--- a/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
++++ b/src/native/cuda/ops/paged_attention_prefill_infinilm/kernel.h
+@@ -65,8 +65,11 @@ class CudaPagedAttentionPrefillInfinilm {
+ 
+           // The HD128 pipeline produces incorrect results on Iluvatar.
+           // Keep its native prefill on the global warp kernel.
++          // Moore devices have a 28 KiB shared-memory limit and cannot compile
++          // the 36,896-byte pipeline, so use the same global-memory fallback.
+           if constexpr (kHeadSize == 128 &&
+-                        Backend::kDeviceType != Device::Type::kIluvatar) {
++                        Backend::kDeviceType != Device::Type::kIluvatar &&
++                        Backend::kDeviceType != Device::Type::kMoore) {
+             if (block_size_ == 256) {
+               constexpr int kWarps = 8;
+               dim3 pipe_grid(static_cast<unsigned>(num_heads_),

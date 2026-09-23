@@ -121,3 +121,21 @@ Pause or stop all workers from the A100 control host with:
 The periodic launcher honors the same shared pause marker and will not launch a
 new worker while the system is paused. Remove only the MetaX cron entry with
 `crontab -e` on `metax49` if that platform must stop independently.
+
+## Daily five-platform pilot
+
+The A100 daily launcher creates one immutable manifest for:
+
+```text
+nvidia-a100
+metax-c550
+ascend-910c
+moore-s5000
+iluvatar-tg150
+```
+
+It uses `decode-4k`, all three dtypes, and the same frozen InfiniOps/InfiniRT
+commits for every platform. Moore defaults to shared-process validation because
+that machine hosts short model-test jobs; its latency is marked non-comparable.
+Ascend245 does not permit a user crontab, so A100 invokes its periodic worker
+over SSH every five minutes through `ops/periodic_ascend_remote.sh`.
