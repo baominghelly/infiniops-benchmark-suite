@@ -17,7 +17,7 @@ from typing import Any
 OPS_ROOT = Path("/data-aisoft/infinibench_data/ops")
 RUNS_ROOT = OPS_ROOT / ".runs"
 CONTROL_ROOT = OPS_ROOT / ".control"
-WORKER_ROOT = Path("/data-aisoft/baoming/infinibench-workers")
+WORKER_ROOT = OPS_ROOT / ".workers"
 LAUNCH_ROOT = Path("/data-aisoft/baoming/infinibench-ops/launches")
 RELEASE_ROOT = "/data-aisoft/infinibench-releases/infinibench-ops-27c5038-v1"
 RELEASE_SHA256 = "37e0f533ba69957145c55eb9c3143990f8360ba4dda955fd14fd0b616d793726"
@@ -239,6 +239,8 @@ def launch_device(
         "python3",
         remote_worker,
         *common,
+        "--worker-root",
+        "/data-aisoft/infinibench_data/ops/.workers",
         "--adapter",
         remote_adapter,
     ]
