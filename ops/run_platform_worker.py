@@ -94,6 +94,25 @@ def console_tail(text: str, limit: int = 12_000) -> str:
     return text[-limit:]
 
 
+def foreign_process_detected(benchmark_output: Path, evidence: str) -> bool:
+    """Return whether the platform runner recorded an external GPU process."""
+    done_marker = benchmark_output / "benchmark.done"
+    foreign_flag = benchmark_output / "foreign-process.flag"
+    try:
+        done_text = done_marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        done_text = ""
+    try:
+        foreign_marker = foreign_flag.stat().st_size > 0
+    except OSError:
+        foreign_marker = False
+    return (
+        foreign_marker
+        or "foreign_process_seen=1" in done_text
+        or "process_owner=foreign" in evidence
+    )
+
+
 def classify_failure(
     console: Path,
     benchmark_output: Path,
@@ -101,22 +120,33 @@ def classify_failure(
 ) -> dict[str, Any]:
     """Classify a completed worker failure and emit a conservative retry policy.
 
-    Auto-retry is allowed only for known transient conditions and only when the
-    failed run left no complete/checkpoint result files. Any partial result is
-    preserved for manual review until shard-level resume is available.
+    Auto-retry is allowed only for known transient conditions. Existing
+    checkpoints are preserved and the periodic worker retries them with
+    ``RESUME=1`` rather than replacing the output directory.
     """
     try:
         text = console.read_text(encoding="utf-8", errors="replace")
     except OSError:
         text = ""
-    lower = text.lower()
+    evidence = text
+    for diagnostic_name in ("benchmark-monitor.log", "benchmark.done"):
+        try:
+            evidence += "\n" + (benchmark_output / diagnostic_name).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            pass
+    lower = evidence.lower()
     result_files = checkpoint_result_files(benchmark_output)
+    foreign_process = foreign_process_detected(benchmark_output, evidence)
 
     if (
         "torch.cuda.is_available()" in text
         and "assertionerror" in lower
     ) or "can't initialize nvml" in lower or "no cuda gpus are available" in lower:
         code = "container_cuda_lost"
+    elif foreign_process:
+        code = "gpu_busy"
     elif "cmake error" in lower or "ninja: build stopped" in lower:
         code = "build_failure"
     elif (
@@ -170,7 +200,7 @@ def classify_failure(
     }[code]
 
     has_checkpoint = bool(result_files)
-    auto_retry = transient and not has_checkpoint
+    auto_retry = transient
     return {
         "failure_code": code,
         "auto_retry": auto_retry,
@@ -179,9 +209,10 @@ def classify_failure(
         "recommended_action": recommended,
         "preserve_partial_results": has_checkpoint,
         "allow_replace_existing_output": not has_checkpoint,
+        "resume_existing_output": has_checkpoint,
         "checkpoint_result_files": [str(path) for path in result_files],
         "checkpoint_result_count": len(result_files),
-        "console_tail": console_tail(text),
+        "console_tail": console_tail(evidence),
     }
 
 
@@ -199,6 +230,11 @@ def create_parser() -> argparse.ArgumentParser:
         "--replace-existing-output",
         action="store_true",
         help="explicitly allow the platform runner to reset this date directory",
+    )
+    parser.add_argument(
+        "--resume-existing-output",
+        action="store_true",
+        help="keep an existing output directory and resume its results.jsonl checkpoints",
     )
     return parser
 
@@ -251,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         "updated_at": utc_now(),
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
         "heartbeat_stale_seconds": HEARTBEAT_STALE_SECONDS,
+        "resume_existing_output": args.resume_existing_output,
     }
 
     command = ["bash", str(adapter)]
@@ -266,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
             "BUILD_INFINIOPS": environment.get("BUILD_INFINIOPS", "1"),
             "UPDATE_SOURCES": environment.get("UPDATE_SOURCES", "1"),
             "REUSE_RUN_DIR": "1" if args.replace_existing_output else "0",
+            "RESUME": "1" if args.resume_existing_output else "0",
         }
     )
     environment.update(PLATFORM_ENV[args.device])
@@ -279,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"infiniops_commit={source['infiniops_commit']}")
         print(f"infinirt_commit={source['infinirt_commit']}")
         print(f"replace_existing_output={args.replace_existing_output}")
+        print(f"resume_existing_output={args.resume_existing_output}")
         print(f"command={' '.join(command)}")
         return 0
 
@@ -287,7 +326,12 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError as exc:  # pragma: no cover - Windows is dry-run only.
         raise RuntimeError("file locking requires Linux; use --dry-run on Windows") from exc
 
-    if output_has_entries(benchmark_output) and not args.replace_existing_output:
+    if args.replace_existing_output and args.resume_existing_output:
+        raise RuntimeError("--replace-existing-output and --resume-existing-output are mutually exclusive")
+
+    if output_has_entries(benchmark_output) and not (
+        args.replace_existing_output or args.resume_existing_output
+    ):
         raise RuntimeError(
             f"benchmark output already exists and is non-empty: {benchmark_output}; "
             "pass --replace-existing-output only if it is disposable"
@@ -363,7 +407,6 @@ def main(argv: list[str] | None = None) -> int:
             return_code = 130 if isinstance(run_exception, KeyboardInterrupt) else 1
         else:
             return_code = process.returncode
-        final_state = "succeeded" if process.returncode == 0 else "failed"
         final_state = "succeeded" if return_code == 0 else "failed"
         failure_policy = None
         if final_state == "failed":

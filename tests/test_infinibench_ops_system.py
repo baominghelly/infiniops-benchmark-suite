@@ -107,7 +107,7 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             self.assertTrue(policy["allow_replace_existing_output"])
             self.assertEqual(policy["recommended_action"], "restart_benchmark_container_then_retry_without_rebuild")
 
-    def test_failure_policy_preserves_checkpoints_and_blocks_auto_retry(self):
+    def test_failure_policy_preserves_checkpoints_and_uses_resume_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             console = root / "benchmark-console.log"
@@ -119,10 +119,34 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             )
             (output / "results.jsonl").write_text("{}\n", encoding="utf-8")
             policy = worker.classify_failure(console, root / "benchmark-output", 1)
-            self.assertFalse(policy["auto_retry"])
+            self.assertTrue(policy["auto_retry"])
             self.assertTrue(policy["preserve_partial_results"])
             self.assertFalse(policy["allow_replace_existing_output"])
+            self.assertTrue(policy["resume_existing_output"])
             self.assertEqual(policy["checkpoint_result_count"], 1)
+
+    def test_failure_policy_reads_platform_foreign_process_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            console = root / "benchmark-console.log"
+            output = root / "benchmark-output" / "bfloat16" / "decode-4k"
+            output.mkdir(parents=True)
+            console.write_text("missing_result=.../results.json\n", encoding="utf-8")
+            (root / "benchmark-output" / "benchmark.done").write_text(
+                "exit_code=1\nforeign_process_seen=1\n",
+                encoding="utf-8",
+            )
+            (root / "benchmark-output" / "foreign-process.flag").write_text(
+                "3850197\n",
+                encoding="utf-8",
+            )
+            (output / "results.jsonl").write_text("{}\n", encoding="utf-8")
+            policy = worker.classify_failure(console, root / "benchmark-output", 3)
+            self.assertEqual(policy["failure_code"], "gpu_busy")
+            self.assertTrue(policy["auto_retry"])
+            self.assertTrue(policy["preserve_partial_results"])
+            self.assertTrue(policy["resume_existing_output"])
+            self.assertIn("foreign_process_seen=1", policy["console_tail"])
 
     def test_unknown_failure_requires_manual_review(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -92,6 +92,32 @@ down state, source-network failure, and GPU-busy rejection. Timeouts remain
 manual because they can indicate a hung accelerator or worker.
 Unknown build, benchmark, configuration, and operator-stop failures require
 manual review. If a failed output contains any `results.json` or
-`results.jsonl`, `auto_retry` is forced to false and
-`allow_replace_existing_output` is forced to false; partial results are
-preserved until shard-level resume is available.
+`results.jsonl`, `allow_replace_existing_output` is forced to false. Known
+transient failures remain retryable and use `RESUME=1`; complete profile
+results are skipped and incomplete `results.jsonl` checkpoints are passed to
+the benchmark harness with `--resume`.
+
+## Periodic MetaX worker takeover
+
+MetaX C550 runs this cron entry every five minutes:
+
+```bash
+*/5 * * * * /data-aisoft/baoming/infinibench-workers/metax-c550/bin/periodic_worker.sh
+```
+
+The launcher uses a host-level `flock`, reads immutable global manifests from
+the shared runs directory, and exits immediately when a worker has a fresh
+heartbeat. If the heartbeat is stale, or a transient failure's retry delay has
+elapsed, it starts the worker with `--resume-existing-output`. The worker still
+uses its per-run lease, so multiple cron invocations cannot benchmark one device
+concurrently.
+
+Pause or stop all workers from the A100 control host with:
+
+```bash
+/data-aisoft/baoming/infinibench-ops/bin/infinibenchctl stop --all
+```
+
+The periodic launcher honors the same shared pause marker and will not launch a
+new worker while the system is paused. Remove only the MetaX cron entry with
+`crontab -e` on `metax49` if that platform must stop independently.

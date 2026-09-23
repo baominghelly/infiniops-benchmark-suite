@@ -20,6 +20,7 @@ build_infiniops="${BUILD_INFINIOPS:-1}"
 update_sources="${UPDATE_SOURCES:-1}"
 backfill_date="${BACKFILL_DATE:-}"
 reuse_run_dir="${REUSE_RUN_DIR:-0}"
+resume_run="${RESUME:-0}"
 infiniops_ref="${INFINIOPS_REF:-}"
 infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-metax-c550}"
@@ -92,6 +93,17 @@ case "$reuse_run_dir" in
     exit 2
     ;;
 esac
+case "$resume_run" in
+  0|1) ;;
+  *)
+    echo "invalid RESUME: $resume_run; expected 0 or 1" >&2
+    exit 2
+    ;;
+esac
+if [[ "$reuse_run_dir" == "1" && "$resume_run" == "1" ]]; then
+  echo "REUSE_RUN_DIR=1 and RESUME=1 cannot be combined" >&2
+  exit 2
+fi
 if [[ -n "$backfill_date" ]]; then
   if [[ ! "$backfill_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -d "$backfill_date" >/dev/null 2>&1; then
     echo "invalid BACKFILL_DATE: $backfill_date; expected YYYY-MM-DD" >&2
@@ -141,14 +153,7 @@ decode_4k_small_ops="${METAX_DECODE_4K_SMALL_OPS:-$small_ops}"
 decode_8k_ops="${METAX_DECODE_8K_OPS:-$target_ops}"
 prefill_4k_ops="${METAX_PREFILL_4K_OPS:-$target_ops}"
 
-if ! docker inspect "$container" >/dev/null 2>&1; then
-  echo "container not found: $container" >&2
-  exit 2
-fi
-if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; then
-  echo "container is not running: $container" >&2
-  exit 2
-fi
+"$host_tools_root/scripts/ensure_benchmark_container.sh" "$container"
 container_id="$(docker inspect -f '{{.Id}}' "$container")"
 
 # Backfill changes shared source trees, so serialize all runner executions on
@@ -163,9 +168,10 @@ if ! flock -n 9; then
 fi
 
 # A backfill directory is deterministic: one target date plus one execution
-# date. Refuse to mix a new attempt with stale checkpoint files. Setting
-# REUSE_RUN_DIR=1 explicitly replaces that fixed directory for a retry.
-if [[ -e "$output_host" ]] && [[ "$reuse_run_dir" != "1" ]]; then
+# date. Refuse to mix a fresh attempt with stale checkpoint files. Use
+# RESUME=1 to preserve and resume checkpoints, or REUSE_RUN_DIR=1 to explicitly
+# replace a disposable fixed directory.
+if [[ -e "$output_host" ]] && [[ "$reuse_run_dir" != "1" && "$resume_run" != "1" ]]; then
   if [[ -n "$(find "$output_host" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
     echo "output directory already exists and is non-empty: $output_host" >&2
     echo "set REUSE_RUN_DIR=1 to replace it for the same backfill/execution date pair" >&2
@@ -701,6 +707,9 @@ run_profile() {
     --min-run-time 0.02
     --timeout 20
   )
+  if docker exec "$container" test -f "$output/results.jsonl"; then
+    command+=(--resume)
+  fi
   if [[ -n "$selected_ops" && "$selected_ops" != "all" ]]; then
     command+=(--ops "$selected_ops")
   fi
@@ -731,6 +740,11 @@ for dtype in "${dtypes[@]}"; do
       decode-8k) selected_ops="$decode_8k_ops" ;;
       prefill-4k) selected_ops="$prefill_4k_ops" ;;
     esac
+    if docker exec "$container" test -f "$output_container/$dtype/$profile/results.json"; then
+      echo "resume_skip_completed=$dtype/$profile" | tee -a "$launcher_log"
+      exporter_sources+=("$output_container/$dtype/$profile/results.json")
+      continue
+    fi
     run_profile "$dtype" "$profile" "$selected_ops" || exit_code=$?
     result_path="$output_container/$dtype/$profile/results.json"
     if docker exec "$container" test -f "$result_path"; then

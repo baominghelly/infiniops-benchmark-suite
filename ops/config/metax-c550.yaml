@@ -1,7 +1,11 @@
 device: metax-c550
 role: [platform-worker]
 transport: shared-nfs
-schedule_enabled: false
+schedule_enabled: true
+periodic_worker:
+  interval_minutes: 5
+  heartbeat_stale_seconds: 120
+  max_auto_retries: 3
 adapter: hermes/run-metax-c550-weekly.sh
 container: baoming_infiniops_metax
 source_roots:
