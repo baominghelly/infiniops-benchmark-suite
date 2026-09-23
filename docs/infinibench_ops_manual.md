@@ -88,7 +88,8 @@ On failure, the worker writes a `failure_policy` object:
 ```
 
 Known transient classes include container CUDA loss, benchmark-container
-down state, source-network failure, GPU-busy rejection, and command timeout.
+down state, source-network failure, and GPU-busy rejection. Timeouts remain
+manual because they can indicate a hung accelerator or worker.
 Unknown build, benchmark, configuration, and operator-stop failures require
 manual review. If a failed output contains any `results.json` or
 `results.jsonl`, `auto_retry` is forced to false and

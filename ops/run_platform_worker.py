@@ -156,7 +156,6 @@ def classify_failure(
         "source_network_failure",
         "benchmark_container_down",
         "gpu_busy",
-        "command_timeout",
     }
     recommended = {
         "container_cuda_lost": "restart_benchmark_container_then_retry_without_rebuild",
