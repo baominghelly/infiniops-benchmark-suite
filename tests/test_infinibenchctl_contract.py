@@ -3,6 +3,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import datetime as dt
+import contextlib
+import io
+import json
 from unittest import mock
 
 
@@ -69,6 +72,34 @@ class InfiniBenchControlContractTests(unittest.TestCase):
         payload["heartbeat_at"] = "2026-09-23T00:00:00+00:00"
         self.assertGreater(ctl.heartbeat_age_seconds(payload), 120)
         self.assertTrue(ctl.heartbeat_is_stale(payload))
+
+    def test_status_lists_each_active_worker_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for device in ctl.DEVICES:
+                run = root / device / "20260923-daily"
+                run.mkdir(parents=True)
+                (run / "worker-manifest.json").write_text(
+                    json.dumps({"state": "running", "heartbeat_at": dt.datetime.now(dt.timezone.utc).isoformat()}),
+                    encoding="utf-8",
+                )
+            with mock.patch.object(
+                ctl,
+                "device_worker_root",
+                side_effect=lambda device: root,
+            ):
+                with mock.patch.object(ctl, "pause_marker", return_value=root / "absent-pause"):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        ctl.command_status(type("Args", (), {})())
+            payload = json.loads(output.getvalue())
+            self.assertEqual(len(payload["active_workers"]), len(ctl.DEVICES))
+            self.assertEqual(
+                [entry["device"] for entry in payload["active_workers"]],
+                sorted(ctl.DEVICES),
+            )
+            self.assertEqual(len(payload["workers"]["nvidia-a100"]), 1)
+            self.assertEqual(len(payload["workers"]["metax-c550"]), 1)
 
 
 if __name__ == "__main__":

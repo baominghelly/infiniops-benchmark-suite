@@ -483,6 +483,7 @@ def command_cancel_run(args: argparse.Namespace) -> int:
 
 
 def command_status(_: argparse.Namespace) -> int:
+    active_workers = active_worker_runs()
     payload = {
         "paused": is_paused(),
         "pause_marker": str(pause_marker()) if is_paused() else None,
@@ -510,22 +511,22 @@ def command_status(_: argparse.Namespace) -> int:
                         "updated_at": item.get("updated_at"),
                     }
                 )
-        for device, run_id in active_worker_runs():
-            path = worker_manifest_path(device, run_id)
-            try:
-                item = read_json(path)
-            except Exception:
-                item = {}
-            age = heartbeat_age_seconds(item)
-            payload["active_workers"].append(
-                {
-                    "device": device,
-                    "global_run_id": run_id,
-                    "heartbeat_age_seconds": None if age is None else round(age, 1),
-                    "heartbeat_stale": heartbeat_is_stale(item),
-                }
-            )
         payload["workers"][device] = sorted(rows, key=lambda row: str(row["global_run_id"]))
+    for device, run_id in active_workers:
+        path = worker_manifest_path(device, run_id)
+        try:
+            item = read_json(path)
+        except Exception:
+            item = {}
+        age = heartbeat_age_seconds(item)
+        payload["active_workers"].append(
+            {
+                "device": device,
+                "global_run_id": run_id,
+                "heartbeat_age_seconds": None if age is None else round(age, 1),
+                "heartbeat_stale": heartbeat_is_stale(item),
+            }
+        )
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
