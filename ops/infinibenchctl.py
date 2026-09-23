@@ -414,7 +414,7 @@ def active_worker_runs() -> list[tuple[str, str]]:
     for device in DEVICES:
         if not device_worker_root(device).is_dir():
             continue
-        for directory in device_worker_root(device).iterdir():
+        for directory in (device_worker_root(device) / device).iterdir():
             path = directory / "worker-manifest.json"
             if not path.is_file():
                 continue
@@ -475,7 +475,7 @@ def command_status(_: argparse.Namespace) -> int:
         rows = []
         root = device_worker_root(device)
         if root.is_dir():
-            for directory in root.iterdir():
+            for directory in (root / device).iterdir():
                 path = directory / "worker-manifest.json"
                 if not path.is_file():
                     continue
