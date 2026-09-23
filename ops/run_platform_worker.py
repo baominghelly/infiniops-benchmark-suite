@@ -152,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
             "INFINIRT_REF": source["infinirt_commit"],
             "DTYPES": ",".join(benchmark["dtypes"]),
             "PROFILES": ",".join(benchmark["profiles"]),
-            "BUILD_INFINIOPS": "1",
-            "UPDATE_SOURCES": "1",
+            "BUILD_INFINIOPS": environment.get("BUILD_INFINIOPS", "1"),
+            "UPDATE_SOURCES": environment.get("UPDATE_SOURCES", "1"),
             "REUSE_RUN_DIR": "1" if args.replace_existing_output else "0",
         }
     )
