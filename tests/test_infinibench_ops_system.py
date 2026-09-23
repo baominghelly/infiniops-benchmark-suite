@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from ops import run_platform_worker as worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +89,60 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             self.assertIn('infinirt_ref="${INFINIRT_REF:-}"', script)
             self.assertIn('INFINIOPS_REF="$infiniops_ref"', script)
             self.assertIn('INFINIRT_REF="$infinirt_ref"', script)
+
+    def test_failure_policy_allows_retry_only_for_known_transient_no_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            console = root / "benchmark-console.log"
+            output = root / "benchmark-output"
+            output.mkdir()
+            console.write_text(
+                "=== container preflight ===\n"
+                "AssertionError\nassert torch.cuda.is_available()\n",
+                encoding="utf-8",
+            )
+            policy = worker.classify_failure(console, output, 1)
+            self.assertEqual(policy["failure_code"], "container_cuda_lost")
+            self.assertTrue(policy["auto_retry"])
+            self.assertTrue(policy["allow_replace_existing_output"])
+            self.assertEqual(policy["recommended_action"], "restart_benchmark_container_then_retry_without_rebuild")
+
+    def test_failure_policy_preserves_checkpoints_and_blocks_auto_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            console = root / "benchmark-console.log"
+            output = root / "benchmark-output" / "float16" / "decode-4k"
+            output.mkdir(parents=True)
+            console.write_text(
+                "AssertionError\nassert torch.cuda.is_available()\n",
+                encoding="utf-8",
+            )
+            (output / "results.jsonl").write_text("{}\n", encoding="utf-8")
+            policy = worker.classify_failure(console, root / "benchmark-output", 1)
+            self.assertFalse(policy["auto_retry"])
+            self.assertTrue(policy["preserve_partial_results"])
+            self.assertFalse(policy["allow_replace_existing_output"])
+            self.assertEqual(policy["checkpoint_result_count"], 1)
+
+    def test_unknown_failure_requires_manual_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            console = root / "benchmark-console.log"
+            output = root / "benchmark-output"
+            output.mkdir()
+            console.write_text("unexpected algebra error\n", encoding="utf-8")
+            policy = worker.classify_failure(console, output, 1)
+            self.assertEqual(policy["failure_code"], "benchmark_failure")
+            self.assertFalse(policy["auto_retry"])
+            self.assertEqual(policy["recommended_action"], "inspect_console_and_diagnostics_manually")
+
+    def test_worker_manifest_contract_declares_heartbeat_and_failure_policy(self):
+        script = (OPS / "run_platform_worker.py").read_text(encoding="utf-8")
+        self.assertIn("HEARTBEAT_INTERVAL_SECONDS = 30", script)
+        self.assertIn("HEARTBEAT_STALE_SECONDS = 120", script)
+        self.assertIn('snapshot["heartbeat_at"] = utc_now()', script)
+        self.assertIn('"failure_policy": failure_policy', script)
+        self.assertIn('"auto_retry": failure_policy["auto_retry"]', script)
 
 
 if __name__ == "__main__":

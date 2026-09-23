@@ -66,3 +66,31 @@ Canonical benchmark data remains under:
 - A succeeded worker refuses to run again.
 - The per-platform lock prevents two workers from writing one device.
 - The global manifest freezes both source commits and the execution timestamp.
+
+## Heartbeat and retry policy
+
+While a worker runs, it refreshes `heartbeat_at` in
+`worker-manifest.json` every 30 seconds. A heartbeat older than 120 seconds is
+reported as stale by `infinibenchctl status`.
+
+On failure, the worker writes a `failure_policy` object:
+
+```json
+{
+  "failure_code": "container_cuda_lost",
+  "auto_retry": true,
+  "max_auto_retries": 3,
+  "retry_delay_seconds": 300,
+  "recommended_action": "restart_benchmark_container_then_retry_without_rebuild",
+  "preserve_partial_results": false,
+  "allow_replace_existing_output": true
+}
+```
+
+Known transient classes include container CUDA loss, benchmark-container
+down state, source-network failure, GPU-busy rejection, and command timeout.
+Unknown build, benchmark, configuration, and operator-stop failures require
+manual review. If a failed output contains any `results.json` or
+`results.jsonl`, `auto_retry` is forced to false and
+`allow_replace_existing_output` is forced to false; partial results are
+preserved until shard-level resume is available.

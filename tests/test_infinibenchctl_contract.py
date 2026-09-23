@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 import subprocess
 import tempfile
+import datetime as dt
 from unittest import mock
 
 
@@ -55,6 +56,19 @@ class InfiniBenchControlContractTests(unittest.TestCase):
                 self.assertTrue(ctl.pause_marker().is_file())
                 ctl.command_resume(args)
                 self.assertFalse(ctl.pause_marker().is_file())
+
+    def test_heartbeat_age_and_staleness_are_derived_from_manifest(self):
+        recent = dt.datetime.now(dt.timezone.utc).isoformat()
+        payload = {
+            "state": "running",
+            "heartbeat_at": recent,
+            "heartbeat_stale_seconds": 120,
+        }
+        self.assertLessEqual(ctl.heartbeat_age_seconds(payload), 1)
+        self.assertFalse(ctl.heartbeat_is_stale(payload))
+        payload["heartbeat_at"] = "2026-09-23T00:00:00+00:00"
+        self.assertGreater(ctl.heartbeat_age_seconds(payload), 120)
+        self.assertTrue(ctl.heartbeat_is_stale(payload))
 
 
 if __name__ == "__main__":

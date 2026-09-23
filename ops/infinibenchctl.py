@@ -76,6 +76,27 @@ def worker_manifest_path(device: str, global_run_id: str) -> Path:
     return device_worker_root(device) / device / global_run_id / "worker-manifest.json"
 
 
+def heartbeat_age_seconds(payload: dict[str, Any]) -> float | None:
+    value = payload.get("heartbeat_at")
+    if not value:
+        return None
+    try:
+        timestamp = dt.datetime.fromisoformat(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt.timezone.utc)
+        return max(0.0, (dt.datetime.now(dt.timezone.utc) - timestamp).total_seconds())
+    except ValueError:
+        return None
+
+
+def heartbeat_is_stale(payload: dict[str, Any]) -> bool:
+    if payload.get("state") != "running":
+        return False
+    age = heartbeat_age_seconds(payload)
+    threshold = float(payload.get("heartbeat_stale_seconds", 120))
+    return age is None or age > threshold
+
+
 def device_worker_root(device: str) -> Path:
     if device == "nvidia-a100":
         return Path("/data-aisoft/baoming/hermes/runs/global-workers")
@@ -465,10 +486,7 @@ def command_status(_: argparse.Namespace) -> int:
     payload = {
         "paused": is_paused(),
         "pause_marker": str(pause_marker()) if is_paused() else None,
-        "active_workers": [
-            {"device": device, "global_run_id": run_id}
-            for device, run_id in active_worker_runs()
-        ],
+        "active_workers": [],
         "workers": {},
     }
     for device in DEVICES:
@@ -492,6 +510,21 @@ def command_status(_: argparse.Namespace) -> int:
                         "updated_at": item.get("updated_at"),
                     }
                 )
+        for device, run_id in active_worker_runs():
+            path = worker_manifest_path(device, run_id)
+            try:
+                item = read_json(path)
+            except Exception:
+                item = {}
+            age = heartbeat_age_seconds(item)
+            payload["active_workers"].append(
+                {
+                    "device": device,
+                    "global_run_id": run_id,
+                    "heartbeat_age_seconds": None if age is None else round(age, 1),
+                    "heartbeat_stale": heartbeat_is_stale(item),
+                }
+            )
         payload["workers"][device] = sorted(rows, key=lambda row: str(row["global_run_id"]))
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
