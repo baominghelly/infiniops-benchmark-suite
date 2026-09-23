@@ -156,18 +156,35 @@ def launch_device(
         common.append("--replace-existing-output")
 
     if device == "nvidia-a100":
+        inner_command = " ".join(
+            shlex.quote(item)
+            for item in [
+                "python3",
+                "/opt/data/scripts/run_platform_worker.py",
+                *common,
+                "--adapter",
+                "/opt/data/scripts/run-nvidia-a100-benchmark.sh",
+            ]
+        )
+        launch_log = (
+            "/data-aisoft/baoming/infinibench-ops/"
+            f"nvidia-launch/{global_run_id}.log"
+        )
+        outer_command = (
+            f"mkdir -p {shlex.quote(str(Path(launch_log).parent))} && "
+            + inner_command
+            + f" > {shlex.quote(launch_log)} 2>&1"
+        )
         command = [
             "docker",
             "exec",
             "-d",
             HERMES,
-            "python3",
-            "/opt/data/scripts/run_platform_worker.py",
-            *common,
-            "--adapter",
-            "/opt/data/scripts/run-nvidia-a100-benchmark.sh",
+            "sh",
+            "-c",
+            outer_command,
         ]
-        completed = run_command(command)
+        completed = run_command(command, capture=True)
         if completed.returncode != 0:
             raise RuntimeError(f"NVIDIA launch failed: {completed.stderr.strip()}")
         return {
@@ -193,18 +210,11 @@ def launch_device(
         + f"echo $! > {shlex.quote(f'{log_dir}/{global_run_id}.pid')}"
     )
     completed = run_command(
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            METAX_SSH,
-            "sh",
-            "-c",
-            remote_command,
-        ]
+        ["ssh", "-o", "BatchMode=yes", METAX_SSH, remote_command]
     )
+    completed_output = ((completed.stdout or "") + (completed.stderr or "")).strip()
     if completed.returncode != 0:
-        raise RuntimeError(f"MetaX launch failed: {completed.stderr.strip()}")
+        raise RuntimeError(f"MetaX launch failed: {completed_output}")
     return {
         "device": device,
         "launch": "ssh-nohup",
