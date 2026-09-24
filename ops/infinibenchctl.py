@@ -185,11 +185,18 @@ def create_manifest(args: argparse.Namespace) -> None:
     for device in args.device:
         common += ["--platform", device]
 
-    direct = "https://github.com/InfiniTensor"
-    proxy = "https://gh-proxy.com/https://github.com/InfiniTensor"
-    candidates = [(f"{direct}/InfiniOps.git", f"{direct}/InfiniRT.git")]
+    repo_prefixes = (
+        "https://github.com/InfiniTensor",
+        "https://gh-proxy.com/https://github.com/InfiniTensor",
+        "https://ghproxy.net/https://github.com/InfiniTensor",
+    )
     if not args.infiniops_commit or not args.infinirt_commit:
-        candidates.append((f"{proxy}/InfiniOps.git", f"{proxy}/InfiniRT.git"))
+        candidates = [
+            (f"{prefix}/InfiniOps.git", f"{prefix}/InfiniRT.git")
+            for prefix in repo_prefixes
+        ]
+    else:
+        candidates = [tuple(f"{repo_prefixes[0]}/{name}.git" for name in ("InfiniOps", "InfiniRT"))]
 
     last_output = ""
     for index, (infiniops_repo, infinirt_repo) in enumerate(candidates, start=1):
@@ -282,6 +289,7 @@ def launch_device(
     remote_adapter = remote["adapter"]
     log_dir = "/data-aisoft/baoming/infinibench-ops/remote-launch"
     remote_arguments = [
+        "nohup",
         "python3",
         remote_worker,
         *common,

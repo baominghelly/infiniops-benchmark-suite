@@ -14,6 +14,13 @@ class RunIluvatarBenchmarkContractTests(unittest.TestCase):
             'container_tools_root="${CONTAINER_BENCHMARK_ROOT:-/data-aisoft/infinibench-scripts}"',
             self.script,
         )
+
+    def test_upstream_patch_fallback_is_available(self):
+        self.assertIn("apply_compat_patch()", self.script)
+        self.assertIn(
+            "patches/iluvatar-tg150-latest/$patch_name",
+            self.script,
+        )
         self.assertIn('device_id="${DEVICE_ID:-iluvatar-tg150}"', self.script)
         self.assertIn(
             'patch_dir="${ILUVATAR_PATCH_DIR:-$container_tools_root/patches/iluvatar-tg150}"',

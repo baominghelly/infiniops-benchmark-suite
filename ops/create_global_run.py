@@ -18,6 +18,13 @@ DEFAULT_INFINIOPS_REPO = "https://github.com/InfiniTensor/InfiniOps.git"
 DEFAULT_INFINIRT_REPO = "https://github.com/InfiniTensor/InfiniRT.git"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+DEVICES = (
+    "nvidia-a100",
+    "metax-c550",
+    "ascend-910c",
+    "moore-s5000",
+    "iluvatar-tg150",
+)
 
 
 def utc_now() -> str:
@@ -88,7 +95,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--platform",
         action="append",
-        choices=["nvidia-a100", "metax-c550"],
+        choices=list(DEVICES),
         default=None,
         help="participating platform; repeat for multiple platforms",
     )
@@ -109,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     args = create_parser().parse_args(argv)
     execution_time = args.execution_time or dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     validate_execution_time(execution_time)
-    platforms = args.platform or ["nvidia-a100", "metax-c550"]
+    platforms = args.platform or list(DEVICES)
     global_run_id = args.global_run_id or f"{execution_time}-{args.schedule_mode}"
     if not RUN_ID_RE.fullmatch(global_run_id):
         raise ValueError("global run ID must be ASCII letters, digits, dot, underscore, or dash")

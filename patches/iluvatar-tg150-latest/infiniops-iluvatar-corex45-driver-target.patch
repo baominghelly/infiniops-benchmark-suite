@@ -1,0 +1,6 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
+ # InfiniOps
++Iluvatar TG150 CoreX driver compatibility is included upstream in this revision.

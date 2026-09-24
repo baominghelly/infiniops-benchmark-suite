@@ -582,9 +582,11 @@ if [[ "$build_infiniops" == "1" ]]; then
   docker exec "$container" bash -c \
     'git -C "$1" archive HEAD | tar -x -C "$2"' \
     sh "$source_root" "$build_workspace/InfiniOps-source"
-  for patch_name in infiniops-iluvatar-corex45-driver-target.patch infiniops-iluvatar-cvta.patch; do
-    patch_file="$patch_dir/$patch_name"
-    docker exec "$container" test -f "$patch_file"
+
+  apply_compat_patch() {
+    local patch_file="$1"
+    local patch_name
+    patch_name="$(basename "$patch_file")"
     echo "apply_patch=$patch_file" | tee -a "$launcher_log"
     if docker exec "$container" bash -c \
       'patch -d "$1" -p1 --dry-run --forward < "$2"' \
@@ -592,14 +594,28 @@ if [[ "$build_infiniops" == "1" ]]; then
       docker exec "$container" bash -c \
         'patch -d "$1" -p1 --forward < "$2"' \
         sh "$build_workspace/InfiniOps-source" "$patch_file" 2>&1 | tee -a "$launcher_log"
+      return 0
     elif docker exec "$container" bash -c \
       'patch -d "$1" -p1 --dry-run -R < "$2"' \
       sh "$build_workspace/InfiniOps-source" "$patch_file" >/dev/null 2>&1; then
       echo "patch_already_applied=$patch_name" | tee -a "$launcher_log"
-    else
-      echo "compatibility patch does not apply: $patch_file" | tee -a "$launcher_log" >&2
-      exit 2
+      return 0
     fi
+    return 1
+  }
+
+  for patch_name in infiniops-iluvatar-corex45-driver-target.patch infiniops-iluvatar-cvta.patch; do
+    patch_file="$patch_dir/$patch_name"
+    docker exec "$container" test -f "$patch_file"
+    if apply_compat_patch "$patch_file"; then
+      continue
+    fi
+    fallback_patch="$container_tools_root/patches/iluvatar-tg150-latest/$patch_name"
+    if docker exec "$container" test -f "$fallback_patch" && apply_compat_patch "$fallback_patch"; then
+      continue
+    fi
+    echo "compatibility patch does not apply: $patch_file" | tee -a "$launcher_log" >&2
+    exit 2
   done
 
   {
