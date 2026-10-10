@@ -1,0 +1,18 @@
+device: hygon-bw1100-01
+role: [platform-worker]
+transport: shared-nfs
+schedule_enabled: true
+periodic_worker:
+  interval_minutes: 5
+  heartbeat_stale_seconds: 120
+  max_attempts: 16
+  max_auto_retries: 16
+  retry_delay_base_seconds: 300
+  retry_delay_multiplier: 2.0
+  retry_delay_cap_seconds: 3600
+  retry_window_seconds: 72000
+adapter: hermes/run-hygon-bw1100-01.sh
+container: baoming_infiniops_hygon
+hygon_arch: gfx938
+hygon_cuda_root: /opt/dtk/cuda/cuda-12
+output_root: /data-aisoft/infinibench_data/ops

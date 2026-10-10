@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit HCU processes reported by Hygon rocm-smi."""
+"""Audit HCU processes reported by a Hygon SMI utility."""
 
 from __future__ import annotations
 
@@ -14,18 +14,35 @@ from pathlib import Path
 from typing import Any
 
 
-ROCM_SMI = "/opt/dtk/bin/rocm-smi"
+ROCM_SMI_CANDIDATES = (
+    "/opt/dtk/bin/rocm-smi",
+    "/opt/hyhal/bin/hy-smi",
+    "/usr/local/hyhal/bin/hy-smi",
+)
 ROCM_SMI_LIBS = (
     "/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/lib"
 )
+
+
+def _smi_path() -> str:
+    configured = os.environ.get("ROCM_SMI")
+    if configured:
+        return configured
+    for candidate in ROCM_SMI_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError(
+        "no executable Hygon SMI found; set ROCM_SMI to rocm-smi or hy-smi"
+    )
 
 
 def _rocm_smi_output(arguments: list[str] | None = None) -> str:
     env = os.environ.copy()
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ROCM_SMI_LIBS + (":" + existing if existing else "")
+    smi_path = _smi_path()
     result = subprocess.run(
-        [ROCM_SMI, *(arguments or ["--showpids"])],
+        [smi_path, *(arguments or ["--showpids"])],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -33,13 +50,17 @@ def _rocm_smi_output(arguments: list[str] | None = None) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"rocm-smi exited with {result.returncode}: {result.stdout}")
+        raise RuntimeError(
+            f"{smi_path} exited with {result.returncode}: {result.stdout}"
+        )
     return result.stdout
 
 
 def device_indices() -> list[str]:
     output = _rocm_smi_output(["--showproductname"])
-    indices = sorted(set(re.findall(r"(?:GPU|HCU)\[([0-9]+)\]", output)), key=int)
+    indices = sorted(
+        set(re.findall(r"(?:GPU|HCU|DCU)\[([0-9]+)\]", output)), key=int
+    )
     if not indices:
         raise RuntimeError("rocm-smi product output did not contain HCU indices")
     return indices
@@ -49,11 +70,14 @@ def utilization_by_gpu() -> dict[str, int | None]:
     output = _rocm_smi_output(["--showuse"])
     values: dict[str, int | None] = {}
     for line in output.splitlines():
-        match = re.match(
-            r"\s*(?:GPU|HCU)\[([0-9]+)\]\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*%", line
-        )
+        header = re.match(r"\s*(?:GPU|HCU|DCU)\[([0-9]+)\]", line)
+        if header is None:
+            continue
+        match = re.search(r"use\s*\(%\)\s*:\s*([0-9]+(?:\.[0-9]+)?)", line)
+        if match is None:
+            match = re.search(r":\s*([0-9]+(?:\.[0-9]+)?)\s*%", line)
         if match:
-            values[match.group(1)] = int(float(match.group(2)))
+            values[header.group(1)] = int(float(match.group(1)))
     return values
 
 
@@ -72,28 +96,43 @@ def _size_to_mib(value: str, unit: str | None) -> float:
 
 def _memory_from_output(output: str) -> dict[str, float]:
     values: dict[str, float] = {}
-    blocks = re.split(r"(?m)(?=^\s*(?:GPU|HCU)\[[0-9]+\])", output)
-    for block in blocks:
-        header = re.match(r"\s*(?:GPU|HCU)\[([0-9]+)\]", block)
+    totals: dict[str, float] = {}
+    used: dict[str, float] = {}
+    for line in output.splitlines():
+        header = re.match(r"\s*(?:GPU|HCU|DCU)\[([0-9]+)\]", line)
         if header is None:
             continue
         index = header.group(1)
-        total_match = re.search(
-            r"\b(?:vram[_ ])?total\b\D*([0-9]+(?:\.[0-9]+)?)\s*(GiB|MiB|KiB|MB|KB|B)?",
-            block,
-            flags=re.IGNORECASE,
-        )
         used_match = re.search(
-            r"\b(?:vram[_ ])?used\b\D*([0-9]+(?:\.[0-9]+)?)\s*(GiB|MiB|KiB|MB|KB|B)?",
-            block,
+            r"\bused\b\D*([0-9]+(?:\.[0-9]+)?)\s*(GiB|MiB|KiB|MB|KB|B)?",
+            line,
             flags=re.IGNORECASE,
         )
-        if total_match and used_match:
-            total = _size_to_mib(total_match.group(1), total_match.group(2))
-            used = _size_to_mib(used_match.group(1), used_match.group(2))
-            if total > 0:
-                values[index] = max(0.0, min(100.0, (total - used) * 100.0 / total))
-                continue
+        if used_match:
+            used[index] = _size_to_mib(used_match.group(1), used_match.group(2))
+        total_match = re.search(
+            r"\btotal\b\D*([0-9]+(?:\.[0-9]+)?)\s*(GiB|MiB|KiB|MB|KB|B)?",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if total_match:
+            totals[index] = _size_to_mib(total_match.group(1), total_match.group(2))
+
+    for index, total in totals.items():
+        if total > 0 and index in used:
+            values[index] = max(
+                0.0,
+                min(100.0, (total - used[index]) * 100.0 / total),
+            )
+    if values:
+        return values
+
+    blocks = re.split(r"(?m)(?=^\s*(?:GPU|HCU|DCU)\[[0-9]+\])", output)
+    for block in blocks:
+        header = re.match(r"\s*(?:GPU|HCU|DCU)\[([0-9]+)\]", block)
+        if header is None:
+            continue
+        index = header.group(1)
 
         percentages = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*%", block)
         if percentages:

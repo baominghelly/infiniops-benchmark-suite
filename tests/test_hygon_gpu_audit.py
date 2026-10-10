@@ -3,10 +3,32 @@ from unittest import mock
 import contextlib
 import io
 
-from scripts.hygon_gpu_audit import main, processes
+from scripts.hygon_gpu_audit import _smi_path, device_indices, main, processes
 
 
 class HygonGpuAuditTests(unittest.TestCase):
+    def test_smi_path_can_be_configured_by_environment(self):
+        with mock.patch.dict("os.environ", {"ROCM_SMI": "/custom/hy-smi"}):
+            self.assertEqual(_smi_path(), "/custom/hy-smi")
+
+    def test_smi_path_detects_opt_hyhal_installation(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch(
+                "scripts.hygon_gpu_audit.os.path.isfile",
+                side_effect=lambda path: path == "/opt/hyhal/bin/hy-smi",
+            ):
+                with mock.patch(
+                    "scripts.hygon_gpu_audit.os.access", return_value=True
+                ):
+                    self.assertEqual(_smi_path(), "/opt/hyhal/bin/hy-smi")
+
+    def test_device_indices_accepts_dcu_prefix(self):
+        output = "DCU[0]: Z100L\nDCU[1]: Z100L\n"
+        with mock.patch(
+            "scripts.hygon_gpu_audit._rocm_smi_output", return_value=output
+        ):
+            self.assertEqual(device_indices(), ["0", "1"])
+
     def test_parses_selected_hcu_process_records(self):
         output = """PIDs for KFD processes:
 
@@ -77,6 +99,32 @@ PID: 456
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stdout.getvalue().splitlines(), ["0", "0,1", "0", "-"])
+
+    def test_select_parses_bw1100_hygon_smi_output(self):
+        def output(arguments=None):
+            if arguments == ["--showproductname"]:
+                return "HCU[0]\t\t: Card Series: BW1100\nHCU[1]\t\t: Card Series: BW1100\n"
+            if arguments == ["--showuse"]:
+                return "HCU[0]\t\t: HCU use (%): 0.0\nHCU[1]\t\t: HCU use (%): 7.0\n"
+            if arguments == ["--showmeminfo", "vram"]:
+                return (
+                    "HCU[0]\t\t: vram Total Memory (MiB): 147440\n"
+                    "HCU[0]\t\t: vram Total Used Memory (MiB): 2\n"
+                    "HCU[1]\t\t: vram Total Memory (MiB): 147440\n"
+                    "HCU[1]\t\t: vram Total Used Memory (MiB): 73720\n"
+                )
+            return "No KFD PIDs currently running!\n"
+
+        stdout = io.StringIO()
+        with mock.patch("scripts.hygon_gpu_audit._rocm_smi_output", side_effect=output):
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main(["--select"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            stdout.getvalue().splitlines(),
+            ["0", "0", "-", "1(utilization=7)"],
+        )
 
 
 if __name__ == "__main__":

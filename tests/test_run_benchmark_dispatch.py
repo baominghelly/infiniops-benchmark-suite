@@ -10,20 +10,26 @@ class RunBenchmarkDispatchTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_dispatches_all_seven_supported_devices(self):
+    def test_dispatches_supported_platforms_and_bw1100_node_aliases(self):
         expected = {
-            "nvidia-a100": "run_a100_benchmark.sh",
-            "metax-c550": "run_metax_benchmark.sh",
-            "ascend-910c": "run_ascend_benchmark.sh",
-            "moore-s5000": "run_moore_benchmark.sh",
-            "iluvatar-tg150": "run_iluvatar_benchmark.sh",
-            "cambricon-mlu590": "run_cambricon_benchmark.sh",
-            "hygon-bw1000": "run_hygon_benchmark.sh",
+            "nvidia-a100": "nvidia-a100",
+            "metax-c550": "metax-c550",
+            "ascend-910c": "ascend-910c",
+            "moore-s5000": "moore-s5000",
+            "iluvatar-tg150": "iluvatar-tg150",
+            "cambricon-mlu590": "cambricon-mlu590",
+            "hygon-bw1000": "hygon-bw1000",
+            "hygon-bw1100": "hygon-bw1100",
+            "bw1100-01": "hygon-bw1100",
+            "bw1100-02": "hygon-bw1100",
         }
-        for device, runner in expected.items():
+        for device, output_device in expected.items():
             with self.subTest(device=device):
-                self.assertIn(f"{device})\n    device_id={device}", self.script)
-                self.assertIn(f"runner={runner}", self.script)
+                self.assertIn(device, self.script)
+                self.assertIn(f"device_id={output_device}", self.script)
+        self.assertIn("runner=run_hygon_benchmark.sh", self.script)
+        self.assertNotIn("device_id=hygon-bw1100-01", self.script)
+        self.assertNotIn("device_id=hygon-bw1100-02", self.script)
 
     def test_uses_canonical_operator_output_root_and_forwards_gpu_args(self):
         self.assertIn(
@@ -35,12 +41,20 @@ class RunBenchmarkDispatchTests(unittest.TestCase):
         self.assertIn('forward_args+=("$@")', self.script)
         self.assertIn('exec "$runner_path" "${forward_args[@]}"', self.script)
 
+    def test_bw1100_nodes_share_a_platform_output_directory(self):
+        self.assertIn("bw1100|hygon-bw1100)", self.script)
+        self.assertIn(
+            "bw1100-01|hygon-bw1100-01|bw1100-02|hygon-bw1100-02)",
+            self.script,
+        )
+        self.assertIn("baoming_infiniops_hygon_dcu2", self.script)
+
     def test_supports_discovery_and_dry_print_without_launching_runner(self):
         self.assertIn("--list", self.script)
         self.assertIn("--print", self.script)
-        self.assertIn("printf 'DEVICE_ID=%s\\n' \"$device_id\"", self.script)
-        self.assertIn("printf 'RUNNER=%s\\n' \"$runner_path\"", self.script)
-        self.assertIn("printf 'OUTPUT_DIR=%s/%s/<run-date>\\n'", self.script)
+        self.assertIn('printf \'DEVICE_ID=%s\\n\' "$device_id"', self.script)
+        self.assertIn('printf \'RUNNER=%s\\n\' "$runner_path"', self.script)
+        self.assertIn('printf \'OUTPUT_DIR=%s/%s/<run-date>\\n\'', self.script)
 
 
 if __name__ == "__main__":

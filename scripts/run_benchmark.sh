@@ -19,6 +19,7 @@ Supported devices:
   iluvatar-tg150   aliases: iluvatar, tianshu
   cambricon-mlu590 aliases: cambricon, mlu
   hygon-bw1000     aliases: hygon, dcu
+  hygon-bw1100     aliases: bw1100, bw1100-01, bw1100-02
 
 Examples:
   run_benchmark.sh metax-c550
@@ -36,6 +37,7 @@ moore-s5000
 iluvatar-tg150
 cambricon-mlu590
 hygon-bw1000
+hygon-bw1100
 EOF
 }
 
@@ -121,6 +123,19 @@ case "$requested_device" in
     device_id=hygon-bw1000
     runner=run_hygon_benchmark.sh
     ;;
+  bw1100|hygon-bw1100)
+    device_id=hygon-bw1100
+    runner=run_hygon_benchmark.sh
+    ;;
+  bw1100-01|hygon-bw1100-01|bw1100-02|hygon-bw1100-02)
+    # Node suffixes are physical execution hints, not separate result platforms.
+    device_id=hygon-bw1100
+    runner=run_hygon_benchmark.sh
+    case "$requested_device" in
+      *-01) hygon_node_hint=hygon-bw1100-01 ;;
+      *-02) hygon_node_hint=hygon-bw1100-02 ;;
+    esac
+    ;;
   *)
     echo "unknown device: $requested_device" >&2
     echo "run with --list to see supported devices" >&2
@@ -131,6 +146,22 @@ esac
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runner_path="$script_dir/$runner"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data/ops}"
+if [[ "$device_id" == "hygon-bw1100" ]]; then
+  if [[ -z "${INFINIBENCH_NODE:-}" ]]; then
+    case "$(hostname -s)" in
+      dcu1) export INFINIBENCH_NODE=hygon-bw1100-01 ;;
+      dcu2) export INFINIBENCH_NODE=hygon-bw1100-02 ;;
+      *) export INFINIBENCH_NODE="$(hostname -s)" ;;
+    esac
+  fi
+  if [[ -n "${hygon_node_hint:-}" ]]; then
+    export INFINIBENCH_NODE="$hygon_node_hint"
+  fi
+  if [[ "$INFINIBENCH_NODE" == "hygon-bw1100-02" && -z "${CONTAINER:-}" ]]; then
+    export CONTAINER=baoming_infiniops_hygon_dcu2
+    export INFINIBENCH_CONTAINER="$CONTAINER"
+  fi
+fi
 
 if [[ "$print_config" == "1" ]]; then
   printf 'DEVICE_ID=%s\n' "$device_id"
