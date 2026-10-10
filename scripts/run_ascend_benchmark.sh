@@ -32,6 +32,8 @@ infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-$default_device_id}"
 output_csv_name="${OUTPUT_CSV_NAME:-infiniops-$device_id.csv}"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data/ops}"
+min_run_time="${MIN_RUN_TIME:-0.02}"
+benchmark_iterations="${BENCHMARK_ITERATIONS:-0}"
 dtypes_input="${DTYPES:-float16}"
 read -r -a dtypes <<<"${dtypes_input//,/ }"
 for dtype in "${dtypes[@]}"; do
@@ -43,6 +45,14 @@ for dtype in "${dtypes[@]}"; do
       ;;
   esac
 done
+if [[ ! "$min_run_time" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v value="$min_run_time" 'BEGIN { exit !(value > 0) }'; then
+  echo "invalid MIN_RUN_TIME: $min_run_time; expected a positive number of seconds" >&2
+  exit 2
+fi
+if [[ ! "$benchmark_iterations" =~ ^[0-9]+$ ]]; then
+  echo "invalid BENCHMARK_ITERATIONS: $benchmark_iterations; expected a non-negative integer" >&2
+  exit 2
+fi
 profiles_input="${PROFILES:-decode-4k}"
 read -r -a profiles <<<"${profiles_input//,/ }"
 for profile in "${profiles[@]}"; do
@@ -812,8 +822,10 @@ run_profile() {
     --output-dir "$output"
     --device npu
     --dtype "$dtype"
+    --platform "$device_id"
     --sha "$sha"
-    --min-run-time 0.02
+    --min-run-time "$min_run_time"
+    --benchmark-iterations "$benchmark_iterations"
     --timeout 20
     --resume
   )

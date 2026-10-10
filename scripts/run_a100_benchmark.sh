@@ -27,6 +27,8 @@ infiniops_ref="${INFINIOPS_REF:-}"
 infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-nvidia-a100}"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data/ops}"
+min_run_time="${MIN_RUN_TIME:-0.02}"
+benchmark_iterations="${BENCHMARK_ITERATIONS:-0}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
 read -r -a dtypes <<<"${dtypes_input//,/ }"
 for dtype in "${dtypes[@]}"; do
@@ -38,6 +40,14 @@ for dtype in "${dtypes[@]}"; do
       ;;
   esac
 done
+if [[ ! "$min_run_time" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v value="$min_run_time" 'BEGIN { exit !(value > 0) }'; then
+  echo "invalid MIN_RUN_TIME: $min_run_time; expected a positive number of seconds" >&2
+  exit 2
+fi
+if [[ ! "$benchmark_iterations" =~ ^[0-9]+$ ]]; then
+  echo "invalid BENCHMARK_ITERATIONS: $benchmark_iterations; expected a non-negative integer" >&2
+  exit 2
+fi
 profiles_input="${PROFILES:-decode-4k}"
 read -r -a profiles <<<"${profiles_input//,/ }"
 for profile in "${profiles[@]}"; do
@@ -145,14 +155,7 @@ decode_4k_small_ops="${NVIDIA_DECODE_4K_SMALL_OPS:-$small_ops}"
 decode_8k_ops="${NVIDIA_DECODE_8K_OPS:-$target_ops}"
 prefill_4k_ops="${NVIDIA_PREFILL_4K_OPS:-$target_ops}"
 
-if ! docker inspect "$container" >/dev/null 2>&1; then
-  echo "container not found: $container" >&2
-  exit 2
-fi
-if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; then
-  echo "container is not running: $container" >&2
-  exit 2
-fi
+"$host_tools_root/scripts/ensure_benchmark_container.sh" "$container"
 container_id="$(docker inspect -f '{{.Id}}' "$container")"
 
 # Backfill changes shared source trees, so serialize all runner executions on
@@ -745,8 +748,10 @@ run_profile() {
     --output-dir "$output"
     --device cuda
     --dtype "$dtype"
+    --platform "$device_id"
     --sha "$sha"
-    --min-run-time 0.02
+    --min-run-time "$min_run_time"
+    --benchmark-iterations "$benchmark_iterations"
     --timeout 20
   )
   if [[ -n "$selected_ops" && "$selected_ops" != "all" ]]; then

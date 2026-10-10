@@ -22,6 +22,8 @@ infiniops_ref="${INFINIOPS_REF:-}"
 infinirt_ref="${INFINIRT_REF:-}"
 device_id="${DEVICE_ID:-cambricon-mlu590}"
 output_root="${OUTPUT_ROOT:-/data-aisoft/infinibench_data/ops}"
+min_run_time="${MIN_RUN_TIME:-0.02}"
+benchmark_iterations="${BENCHMARK_ITERATIONS:-0}"
 dtypes_input="${DTYPES:-float16,float32,bfloat16}"
 read -r -a dtypes <<<"${dtypes_input//,/ }"
 for dtype in "${dtypes[@]}"; do
@@ -33,6 +35,14 @@ for dtype in "${dtypes[@]}"; do
       ;;
   esac
 done
+if [[ ! "$min_run_time" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v value="$min_run_time" 'BEGIN { exit !(value > 0) }'; then
+  echo "invalid MIN_RUN_TIME: $min_run_time; expected a positive number of seconds" >&2
+  exit 2
+fi
+if [[ ! "$benchmark_iterations" =~ ^[0-9]+$ ]]; then
+  echo "invalid BENCHMARK_ITERATIONS: $benchmark_iterations; expected a non-negative integer" >&2
+  exit 2
+fi
 
 case "$gpu_allow_occupied" in
   0|1) ;;
@@ -148,14 +158,7 @@ sha=""
 infinirt_sha=""
 monitor_pid=""
 foreign_process_seen=0
-if ! docker inspect "$container" >/dev/null 2>&1; then
-  echo "container not found: $container" >&2
-  exit 2
-fi
-if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ]]; then
-  echo "container is not running: $container" >&2
-  exit 2
-fi
+"$host_tools_root/scripts/ensure_benchmark_container.sh" "$container"
 test -f "$mlu_audit"
 container_id="$(docker inspect -f '{{.Id}}' "$container")"
 # Backfill changes shared source trees, so serialize all runner executions on
@@ -557,7 +560,8 @@ run_profile() {
     --device mlu
     --dtype "$dtype"
     --sha "$sha"
-    --min-run-time 0.02
+    --min-run-time "$min_run_time"
+    --benchmark-iterations "$benchmark_iterations"
     --timeout 20
   )
   if [[ -n "$selected_ops" && "$selected_ops" != "all" ]]; then
