@@ -21,12 +21,19 @@ DEFAULT_WORKER_ROOT = Path("/data-aisoft/baoming/infinibench-workers")
 DEFAULT_RUNNER = "/data-aisoft/infinibench-scripts/scripts/run_benchmark.sh"
 HEARTBEAT_INTERVAL_SECONDS = 30
 HEARTBEAT_STALE_SECONDS = 120
+MAX_AUTO_ATTEMPTS = 16
+RETRY_DELAY_BASE_SECONDS = 300
+RETRY_DELAY_MULTIPLIER = 2.0
+RETRY_DELAY_CAP_SECONDS = 3600
+RETRY_WINDOW_SECONDS = 20 * 60 * 60
 ADAPTERS = {
     "ascend-910c": "run-ascend-910c.sh",
     "iluvatar-tg150": "run-iluvatar-tg150.sh",
     "nvidia-a100": "run-nvidia-a100-benchmark.sh",
     "metax-c550": "run-metax-c550-weekly.sh",
     "moore-s5000": "run-moore-s5000.sh",
+    "hygon-bw1100": "run-hygon-bw1100.sh",
+    "cambricon-mlu590": "run-cambricon-mlu590.sh",
 }
 PLATFORM_ENV = {
     "nvidia-a100": {},
@@ -57,6 +64,28 @@ PLATFORM_ENV = {
         "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
         "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
     },
+    "hygon-bw1100": {
+        "DEVICE": "hygon-bw1100",
+        "CONTAINER": "baoming_infiniops_hygon",
+        "HYGON_ARCH": "gfx938",
+        "HYGON_CUDA_ROOT": "/opt/dtk/cuda/cuda-12",
+        "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
+        "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
+    },
+    "cambricon-mlu590": {
+        "DEVICE": "cambricon-mlu590",
+        "CONTAINER": "infinicore-cambricon-main-benchmark",
+        "INFINIOPS_SOURCE_ROOT": "/workspace/InfiniOps",
+        "INFINIRT_SOURCE_ROOT": "/workspace/InfiniRT",
+        "INFINIOPS_BUILD_DIR": "/workspace/.cache/infiniops-build",
+    },
+}
+HYGON_NODES_BY_HOST = {
+    "dcu1": "hygon-bw1100-01",
+    "dcu2": "hygon-bw1100-02",
+}
+HYGON_CONTAINERS_BY_NODE = {
+    "hygon-bw1100-02": "baoming_infiniops_hygon_dcu2",
 }
 
 
@@ -68,6 +97,18 @@ def host_name() -> str:
     if hasattr(os, "uname"):
         return os.uname().nodename
     return os.environ.get("COMPUTERNAME", os.name)
+
+
+def resolve_node_id(device: str, explicit_node: str | None) -> str | None:
+    """Return the physical BW1100 node while keeping a logical platform device."""
+    if device != "hygon-bw1100":
+        return None
+    value = explicit_node or os.environ.get("INFINIBENCH_NODE")
+    if not value:
+        value = HYGON_NODES_BY_HOST.get(host_name().split(".", 1)[0], host_name())
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        raise ValueError("invalid Hygon worker node ID")
+    return value
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -228,8 +269,16 @@ def classify_failure(
     return {
         "failure_code": code,
         "auto_retry": auto_retry,
-        "max_auto_retries": 3 if auto_retry else 0,
-        "retry_delay_seconds": 300 if auto_retry else None,
+        # ``max_auto_retries`` is retained for deployed periodic workers that
+        # have not yet been upgraded.  New code uses the explicit total-attempt
+        # contract in ``max_attempts``.
+        "max_attempts": MAX_AUTO_ATTEMPTS if auto_retry else 0,
+        "max_auto_retries": MAX_AUTO_ATTEMPTS if auto_retry else 0,
+        "retry_delay_base_seconds": RETRY_DELAY_BASE_SECONDS if auto_retry else None,
+        "retry_delay_multiplier": RETRY_DELAY_MULTIPLIER if auto_retry else None,
+        "retry_delay_cap_seconds": RETRY_DELAY_CAP_SECONDS if auto_retry else None,
+        "retry_delay_seconds": RETRY_DELAY_BASE_SECONDS if auto_retry else None,
+        "retry_window_seconds": RETRY_WINDOW_SECONDS if auto_retry else 0,
         "recommended_action": recommended,
         "preserve_partial_results": has_checkpoint,
         "allow_replace_existing_output": not has_checkpoint,
@@ -244,6 +293,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--global-run-id", required=True)
     parser.add_argument("--device", choices=sorted(ADAPTERS), required=True)
+    parser.add_argument("--node-id", help="physical execution node for a logical platform")
     parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
     parser.add_argument("--ops-root", type=Path, default=DEFAULT_OPS_ROOT)
     parser.add_argument("--worker-root", type=Path, default=DEFAULT_WORKER_ROOT)
@@ -270,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(args.runs_root, args.global_run_id)
     if args.device not in manifest.get("platforms", []):
         raise RuntimeError(f"{args.device} is not in global run platform list")
+    node_id = resolve_node_id(args.device, args.node_id)
 
     execution_time = str(manifest["execution_time"])
     execution_date = execution_time[:8]
@@ -295,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": 1,
         "global_run_id": args.global_run_id,
         "device": args.device,
+        "node": node_id,
         "state": "pending",
         "host": host_name(),
         "pid": None,
@@ -316,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
 
     command = ["bash", str(adapter)]
     environment = os.environ.copy()
+    container_override = environment.get("INFINIBENCH_CONTAINER")
     environment.update(
         {
             "BENCHMARK_RUNNER": args.benchmark_runner,
@@ -331,9 +384,16 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     environment.update(PLATFORM_ENV[args.device])
+    if node_id:
+        environment["INFINIBENCH_NODE"] = node_id
+    selected_container = container_override or HYGON_CONTAINERS_BY_NODE.get(node_id or "")
+    if selected_container:
+        environment["CONTAINER"] = selected_container
 
     if args.dry_run:
         print(f"dry_run=true device={args.device}")
+        if node_id:
+            print(f"node={node_id}")
         print(f"global_manifest={args.runs_root / args.global_run_id / 'global-manifest.json'}")
         print(f"adapter={adapter}")
         print(f"benchmark_output={benchmark_output}")
@@ -388,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         atomic_write_json(worker_manifest, base_payload)
         console.write_text("", encoding="utf-8")
 
-        print(f"worker_start global_run_id={args.global_run_id} device={args.device}")
+        print(f"worker_start global_run_id={args.global_run_id} device={args.device} node={node_id}")
         heartbeat_stop = threading.Event()
 
         def write_heartbeat() -> None:
@@ -455,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         print(console.read_text(encoding="utf-8", errors="replace"), end="")
         print(
             f"worker_end global_run_id={args.global_run_id} "
-            f"device={args.device} state={final_state} exit_code={return_code}"
+            f"device={args.device} node={node_id} state={final_state} exit_code={return_code}"
         )
         if run_exception is not None:
             raise run_exception

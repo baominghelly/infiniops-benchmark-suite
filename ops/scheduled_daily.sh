@@ -18,6 +18,8 @@ exec /data-aisoft/baoming/infinibench-ops/bin/infinibenchctl \
   --device ascend-910c \
   --device moore-s5000 \
   --device iluvatar-tg150 \
+  --device hygon-bw1100 \
+  --device cambricon-mlu590 \
   --global-run-id "${today}-daily" \
   --execution-time "${today}-020000" \
   --schedule-mode daily \

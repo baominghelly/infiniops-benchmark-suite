@@ -5,7 +5,12 @@ schedule_enabled: true
 periodic_worker:
   interval_minutes: 5
   heartbeat_stale_seconds: 120
-  max_auto_retries: 3
+  max_attempts: 16
+  max_auto_retries: 16
+  retry_delay_base_seconds: 300
+  retry_delay_multiplier: 2.0
+  retry_delay_cap_seconds: 3600
+  retry_window_seconds: 72000
 adapter: hermes/run-moore-s5000.sh
 container: baoming_infiniops_moore
 gpu_allow_occupied: true

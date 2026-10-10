@@ -24,6 +24,8 @@ DEVICES = (
     "ascend-910c",
     "moore-s5000",
     "iluvatar-tg150",
+    "hygon-bw1100",
+    "cambricon-mlu590",
 )
 
 

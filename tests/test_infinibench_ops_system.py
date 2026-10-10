@@ -3,8 +3,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import datetime as dt
 from pathlib import Path
 from ops import run_platform_worker as worker
+from ops import periodic_worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,10 +90,19 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             "run-ascend-910c.sh",
             "run-iluvatar-tg150.sh",
             "run-moore-s5000.sh",
+            "run-hygon-bw1100-01.sh",
+            "run-hygon-bw1100.sh",
         ):
             script = (ROOT / "hermes" / name).read_text(encoding="utf-8")
             self.assertIn('export DEVICE="${BENCHMARK_DEVICE:-', script)
             self.assertIn('runner="${BENCHMARK_RUNNER:-', script)
+        hygon_legacy = (ROOT / "hermes" / "run-hygon-bw1100-01.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('export DEVICE="${BENCHMARK_DEVICE:-hygon-bw1100}"', hygon_legacy)
+        hygon = (ROOT / "hermes" / "run-hygon-bw1100.sh").read_text(encoding="utf-8")
+        self.assertIn('export DEVICE="${BENCHMARK_DEVICE:-hygon-bw1100}"', hygon)
+
         for script in (nvidia, metax):
             self.assertIn('infiniops_ref="${INFINIOPS_REF:-}"', script)
             self.assertIn('infinirt_ref="${INFINIRT_REF:-}"', script)
@@ -114,6 +125,11 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             self.assertTrue(policy["auto_retry"])
             self.assertTrue(policy["allow_replace_existing_output"])
             self.assertEqual(policy["recommended_action"], "restart_benchmark_container_then_retry_without_rebuild")
+            self.assertEqual(policy["max_attempts"], 16)
+            self.assertEqual(policy["retry_delay_base_seconds"], 300)
+            self.assertEqual(policy["retry_delay_multiplier"], 2.0)
+            self.assertEqual(policy["retry_delay_cap_seconds"], 3600)
+            self.assertEqual(policy["retry_window_seconds"], 20 * 60 * 60)
 
     def test_failure_policy_preserves_checkpoints_and_uses_resume_retry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -167,6 +183,83 @@ class InfiniBenchOpsSystemTests(unittest.TestCase):
             self.assertEqual(policy["failure_code"], "benchmark_failure")
             self.assertFalse(policy["auto_retry"])
             self.assertEqual(policy["recommended_action"], "inspect_console_and_diagnostics_manually")
+
+    def test_periodic_retry_uses_capped_exponential_backoff(self):
+        delays = [
+            periodic_worker.retry_delay_seconds(
+                {
+                    "attempts": attempt,
+                    "failure_policy": {
+                        "retry_delay_base_seconds": 300,
+                        "retry_delay_multiplier": 2.0,
+                        "retry_delay_cap_seconds": 3600,
+                    },
+                }
+            )
+            for attempt in range(1, 7)
+        ]
+        self.assertEqual(delays, [300, 600, 1200, 2400, 3600, 3600])
+
+    def test_periodic_retry_window_blocks_late_new_attempts(self):
+        created = "2026-10-08T00:00:00+00:00"
+        now = periodic_worker.parse_time("2026-10-08T20:00:00+00:00")
+        manifest = {"schedule": {"created_at": created}}
+        worker_state = {"failure_policy": {"retry_window_seconds": 72000}}
+        self.assertFalse(
+            periodic_worker.retry_window_allows_new_attempt(
+                manifest, worker_state, now
+            )
+        )
+        worker_state["failure_policy"]["retry_window_seconds"] = 72001
+        self.assertTrue(
+            periodic_worker.retry_window_allows_new_attempt(
+                manifest, worker_state, now
+            )
+        )
+
+    def test_hygon_logical_platform_uses_shared_state_and_failover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs = root / ".runs" / "20261009-daily"
+            workers = root / ".workers" / "hygon-bw1100" / "20261009-daily"
+            runs.mkdir(parents=True)
+            workers.mkdir(parents=True)
+            now = dt.datetime.now(dt.timezone.utc)
+            (runs / "global-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "global_run_id": "20261009-daily",
+                        "state": "ready",
+                        "schedule": {"created_at": now.isoformat()},
+                        "platforms": ["hygon-bw1100"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fresh = {
+                "state": "running",
+                "heartbeat_at": now.isoformat(),
+                "heartbeat_stale_seconds": 120,
+                "attempts": 1,
+            }
+            (workers / "worker-manifest.json").write_text(
+                json.dumps(fresh), encoding="utf-8"
+            )
+            self.assertIsNone(
+                periodic_worker.select_candidate(
+                    runs.parent, root / ".control", workers.parent.parent, "hygon-bw1100", 48
+                )
+            )
+            fresh["heartbeat_at"] = "2026-10-08T00:00:00+00:00"
+            (workers / "worker-manifest.json").write_text(
+                json.dumps(fresh), encoding="utf-8"
+            )
+            self.assertEqual(
+                periodic_worker.select_candidate(
+                    runs.parent, root / ".control", workers.parent.parent, "hygon-bw1100", 48
+                ),
+                ("20261009-daily", "worker heartbeat is stale"),
+            )
 
     def test_worker_manifest_contract_declares_heartbeat_and_failure_policy(self):
         script = (OPS / "run_platform_worker.py").read_text(encoding="utf-8")

@@ -48,6 +48,28 @@ REMOTE_WORKERS = {
         "worker": "/data-aisoft/baoming/infinibench-workers/iluvatar-tg150/bin/run_platform_worker.py",
         "adapter": "/data-aisoft/baoming/infinibench-workers/iluvatar-tg150/bin/run-iluvatar-tg150.sh",
     },
+    "hygon-bw1100": {
+        "ssh": "hygon251",
+        "container": "baoming_infiniops_hygon",
+        "worker": "/data-aisoft/baoming/infinibench-workers/hygon-bw1100-01/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/hygon-bw1100-01/bin/run-hygon-bw1100.sh",
+    },
+    "cambricon-mlu590": {
+        "ssh": "cambricon28",
+        "container": "infinicore-cambricon-main-benchmark",
+        "worker": "/data-aisoft/baoming/infinibench-workers/cambricon-mlu590/bin/run_platform_worker.py",
+        "adapter": "/data-aisoft/baoming/infinibench-workers/cambricon-mlu590/bin/run-cambricon-mlu590.sh",
+    },
+}
+HYGON_WORKERS = {
+    "hygon-bw1100-01": {
+        "ssh": "hygon251",
+        "container": "baoming_infiniops_hygon",
+    },
+    "hygon-bw1100-02": {
+        "ssh": "hygon252",
+        "container": "baoming_infiniops_hygon_dcu2",
+    },
 }
 DEVICES = ("nvidia-a100", *REMOTE_WORKERS)
 
@@ -289,7 +311,6 @@ def launch_device(
     remote_adapter = remote["adapter"]
     log_dir = "/data-aisoft/baoming/infinibench-ops/remote-launch"
     remote_arguments = [
-        "nohup",
         "python3",
         remote_worker,
         *common,
@@ -298,18 +319,24 @@ def launch_device(
         "--adapter",
         remote_adapter,
     ]
-    remote_command = (
-        f"mkdir -p {shlex.quote(log_dir)} && "
+    inner_command = (
+        f"mkdir -p {shlex.quote(log_dir)}; "
         + " ".join(shlex.quote(item) for item in remote_arguments)
         + f" > {shlex.quote(f'{log_dir}/{global_run_id}.log')} 2>&1 < /dev/null & "
-        + f"echo $! > {shlex.quote(f'{log_dir}/{global_run_id}.pid')}"
+        + "pid=$!; "
+        + f"printf '%s\\n' \"$pid\" > {shlex.quote(f'{log_dir}/{global_run_id}.pid')}; "
+        + 'disown "$pid" 2>/dev/null || true; exit 0'
+    )
+    remote_command = " ".join(
+        shlex.quote(item)
+        for item in ["bash", "-c", inner_command]
     )
     completed = run_command(
         ["ssh", "-o", "BatchMode=yes", remote["ssh"], remote_command]
     )
     completed_output = ((completed.stdout or "") + (completed.stderr or "")).strip()
     if completed.returncode != 0:
-        raise RuntimeError(f"MetaX launch failed: {completed_output}")
+        raise RuntimeError(f"{device} launch failed: {completed_output}")
     return {
         "device": device,
         "launch": "ssh-nohup",
@@ -458,6 +485,8 @@ def stop_worker(device: str, global_run_id: str) -> dict[str, Any]:
             run_command(["docker", "exec", HERMES, "kill", "-TERM", str(pid)])
     else:
         remote = REMOTE_WORKERS[device]
+        if device == "hygon-bw1100":
+            remote = HYGON_WORKERS.get(str(payload.get("node") or ""), remote)
         target_benchmark_processes(
             remote["container"],
             output_dir,

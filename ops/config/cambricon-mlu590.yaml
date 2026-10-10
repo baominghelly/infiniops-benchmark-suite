@@ -1,0 +1,20 @@
+device: cambricon-mlu590
+role: [platform-worker]
+transport: local-disk
+schedule_enabled: true
+periodic_worker:
+  interval_minutes: 5
+  heartbeat_stale_seconds: 120
+  max_attempts: 16
+  max_auto_retries: 16
+  retry_delay_base_seconds: 300
+  retry_delay_multiplier: 2.0
+  retry_delay_cap_seconds: 3600
+  retry_window_seconds: 72000
+adapter: hermes/run-cambricon-mlu590.sh
+container: infinicore-cambricon-main-benchmark
+source_roots:
+  infiniops: /workspace/InfiniOps
+  infinirt: /workspace/InfiniRT
+infiniops_build_dir: /workspace/.cache/infiniops-build
+output_root: /data-aisoft/infinibench_data/ops

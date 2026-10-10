@@ -11,6 +11,10 @@ from unittest import mock
 
 from ops import infinibenchctl as ctl
 
+ROOT = Path(__file__).resolve().parents[1]
+from ops import create_global_run as manifest
+from ops import run_platform_worker as worker
+
 
 class InfiniBenchControlContractTests(unittest.TestCase):
     def test_parser_exposes_five_operational_commands(self):
@@ -42,12 +46,62 @@ class InfiniBenchControlContractTests(unittest.TestCase):
                 "ascend-910c",
                 "moore-s5000",
                 "iluvatar-tg150",
+                "hygon-bw1100",
+                "cambricon-mlu590",
             ),
         )
         self.assertEqual(
             sorted(ctl.REMOTE_WORKERS),
             sorted(ctl.DEVICES[1:]),
         )
+
+    def test_daily_schedule_registers_every_worker_consistently(self):
+        import re
+
+        self.assertEqual(manifest.DEVICES, ctl.DEVICES)
+
+        schedule = (ROOT / "ops" / "scheduled_daily.sh").read_text(encoding="utf-8")
+        scheduled = set(re.findall(r"--device ([a-z0-9-]+)", schedule))
+        self.assertEqual(scheduled, set(ctl.DEVICES))
+
+        periodic = (ROOT / "ops" / "periodic_worker.sh").read_text(encoding="utf-8")
+        for device in ctl.DEVICES:
+            if device == "hygon-bw1100":
+                self.assertIn("hygon-bw1100)\n    adapter=run-hygon-bw1100.sh", periodic)
+            else:
+                self.assertIn(f"{device}) adapter=", periodic)
+
+        from ops import periodic_worker
+
+        self.assertEqual(
+            sorted(periodic_worker.ADAPTERS),
+            sorted(worker.ADAPTERS),
+        )
+        hygon_remote = (
+            ROOT / "ops" / "periodic_hygon_remote.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$host"', hygon_remote)
+        self.assertIn("launch_node hygon251 hygon-bw1100-01", hygon_remote)
+        self.assertIn("launch_node hygon252 hygon-bw1100-02", hygon_remote)
+        self.assertIn("INFINIBENCH_DEVICE=hygon-bw1100", hygon_remote)
+        self.assertIn("INFINIBENCH_NODE=", hygon_remote)
+        self.assertIn("baoming_infiniops_hygon_dcu2", hygon_remote)
+        self.assertIn("hygon-bw1100)\n    adapter=run-hygon-bw1100.sh", periodic)
+        self.assertIn('benchmark_output = args.ops_root / args.device / execution_date', (ROOT / "ops" / "run_platform_worker.py").read_text(encoding="utf-8"))
+
+        for device in ctl.DEVICES:
+            remote = ctl.REMOTE_WORKERS.get(device)
+            if not remote:
+                continue
+            adapter_name = Path(remote["adapter"]).name
+            self.assertTrue(
+                (ROOT / "hermes" / adapter_name).is_file(),
+                adapter_name,
+            )
+            self.assertTrue(
+                (ROOT / "ops" / "config" / f"{device}.yaml").is_file(),
+                device,
+            )
 
     def test_manifest_creator_captures_candidate_output_for_fallback(self):
         args = type("Args", (), {

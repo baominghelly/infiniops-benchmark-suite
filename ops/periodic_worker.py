@@ -21,12 +21,17 @@ from typing import Any
 DEFAULT_RUNS_ROOT = Path("/data-aisoft/infinibench_data/ops/.runs")
 DEFAULT_CONTROL_ROOT = Path("/data-aisoft/infinibench_data/ops/.control")
 DEFAULT_WORKER_ROOT = Path("/data-aisoft/infinibench_data/ops/.workers")
+DEFAULT_RETRY_DELAY_BASE_SECONDS = 300.0
+DEFAULT_RETRY_DELAY_MULTIPLIER = 2.0
+DEFAULT_RETRY_DELAY_CAP_SECONDS = 3600.0
 ADAPTERS = {
     "ascend-910c": "run-ascend-910c.sh",
     "iluvatar-tg150": "run-iluvatar-tg150.sh",
     "metax-c550": "run-metax-c550-weekly.sh",
     "moore-s5000": "run-moore-s5000.sh",
     "nvidia-a100": "run-nvidia-a100-benchmark.sh",
+    "hygon-bw1100": "run-hygon-bw1100.sh",
+    "cambricon-mlu590": "run-cambricon-mlu590.sh",
 }
 
 
@@ -64,13 +69,65 @@ def heartbeat_is_fresh(worker: dict[str, Any]) -> bool:
     return (utc_now() - heartbeat).total_seconds() <= threshold
 
 
+def bounded_float(value: Any, default: float, minimum: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result >= minimum else default
+
+
+def retry_delay_seconds(worker: dict[str, Any]) -> float:
+    """Return exponential backoff, capped at one hour after early failures."""
+    policy = worker.get("failure_policy") or {}
+    attempts = max(1, int(worker.get("attempts") or 1))
+    base = bounded_float(
+        policy.get("retry_delay_base_seconds", policy.get("retry_delay_seconds")),
+        DEFAULT_RETRY_DELAY_BASE_SECONDS,
+        1.0,
+    )
+    multiplier = bounded_float(
+        policy.get("retry_delay_multiplier"),
+        1.0,
+        1.0,
+    )
+    cap = bounded_float(
+        policy.get("retry_delay_cap_seconds"),
+        base,
+        base,
+    )
+    return min(cap, base * (multiplier ** max(0, attempts - 1)))
+
+
 def retry_delay_elapsed(worker: dict[str, Any]) -> bool:
     ended = parse_time(worker.get("ended_at"))
     if ended is None:
         return True
+    return (utc_now() - ended).total_seconds() >= retry_delay_seconds(worker)
+
+
+def retry_window_allows_new_attempt(
+    manifest: dict[str, Any], worker: dict[str, Any], now: dt.datetime
+) -> bool:
+    """Keep transient retries inside one daily scheduling interval.
+
+    A long-running attempt is not killed here; this gate only prevents the
+    periodic launcher from starting another attempt after the window closes.
+    """
     policy = worker.get("failure_policy") or {}
-    delay = float(policy.get("retry_delay_seconds") or 0)
-    return (utc_now() - ended).total_seconds() >= delay
+    window = policy.get("retry_window_seconds")
+    if window is None:
+        return True
+    try:
+        window_seconds = float(window)
+    except (TypeError, ValueError):
+        return True
+    if window_seconds <= 0:
+        return False
+    created = parse_time((manifest.get("schedule") or {}).get("created_at"))
+    if created is None:
+        return True
+    return (now - created).total_seconds() < window_seconds
 
 
 def select_candidate(
@@ -112,8 +169,14 @@ def select_candidate(
 
         attempts = max(1, int(worker.get("attempts") or 1))
         policy = worker.get("failure_policy") or {}
-        max_attempts = max(1, int(policy.get("max_auto_retries", 3)))
+        explicit_max_attempts = policy.get("max_attempts")
+        if explicit_max_attempts is not None:
+            max_attempts = max(1, int(explicit_max_attempts))
+        else:
+            max_attempts = max(1, int(policy.get("max_auto_retries", 3)))
         if attempts >= max_attempts:
+            continue
+        if not retry_window_allows_new_attempt(manifest, worker, now):
             continue
         if worker.get("state") == "failed":
             auto_retry = bool(policy.get("auto_retry", worker.get("auto_retry", False)))
@@ -137,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-root", type=Path, default=DEFAULT_WORKER_ROOT)
     parser.add_argument("--worker", type=Path, required=True)
     parser.add_argument("--adapter", type=Path)
+    parser.add_argument("--node-id")
     parser.add_argument("--max-age-hours", type=float, default=48.0)
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -163,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id,
         "--device",
         args.device,
+        *(["--node-id", args.node_id] if args.node_id else []),
         "--worker-root",
         str(args.worker_root),
         "--adapter",
