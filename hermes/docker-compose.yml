@@ -1,0 +1,35 @@
+services:
+  baoming-hermes-agent:
+    image: infinibench/hermes-agent:ca29a769
+    container_name: baoming_hermes_agent
+    restart: unless-stopped
+    network_mode: bridge
+    command: ["gateway", "run", "--replace"]
+    environment:
+      TZ: Asia/Shanghai
+      HERMES_UID: "1006"
+      HERMES_GID: "1006"
+      HERMES_HOME: /opt/data
+      HERMES_WRITE_SAFE_ROOT: /opt/data
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+      HERMES_LAZY_INSTALL_TARGET: /opt/data/lazy-packages
+      API_SERVER_ENABLED: "false"
+      HERMES_DASHBOARD: "0"
+      NVIDIA_VISIBLE_DEVICES: void
+      CUDA_VISIBLE_DEVICES: ""
+    volumes:
+      - /data-aisoft/baoming/hermes/data:/opt/data
+      - /data-aisoft/baoming/hermes/workspace:/workspace
+      - /data-aisoft/baoming/hermes/skills:/skills:ro
+      - /data-aisoft/baoming/hermes/repo:/repo:ro
+      - /data-aisoft/baoming/hermes/runs:/data-aisoft/baoming/hermes/runs
+      - /data-aisoft/infinibench-scripts:/data-aisoft/infinibench-scripts:ro
+      - /data-aisoft/infinibench_data:/data-aisoft/infinibench_data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/command/s6-svstat /run/service/gateway-default | grep -q '^up'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
