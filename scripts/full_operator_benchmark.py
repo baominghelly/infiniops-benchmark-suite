@@ -18,6 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from .classify_operator_semantics import classify as _classify_semantics
+    from .classify_operator_semantics_9cat import category_code as _coarse_category_code
+except ImportError:
+    from classify_operator_semantics import classify as _classify_semantics
+    from classify_operator_semantics_9cat import category_code as _coarse_category_code
+
 
 _DEVICE_PLUGIN_MODULES = {
     "mlu": "torch_mlu",
@@ -77,6 +84,7 @@ RESULT_FIELDS = [
     "speedup",
     "ref_mode",
     "validation_mode",
+    "reference_error",
     "error",
     "worker_exit_code",
     "duration_s",
@@ -97,7 +105,203 @@ if _BENCHMARK_PROFILE not in _PROFILE_DEFAULT_SHAPES:
     )
 _DEFAULT_SHAPE = _PROFILE_DEFAULT_SHAPES[_BENCHMARK_PROFILE]
 
+# PyTorch cannot provide a usable low-precision reference path for these FFT
+# and special-function wrappers. Keep Float32 for native-support validation and
+# future complex-dtype work, but do not repeat known FP16/BF16 failures.
+_FP32_ONLY_SPECIAL_OPS = {
+    "fft_fft",
+    "fft_fft2",
+    "fft_fftn",
+    "fft_hfft",
+    "fft_hfft2",
+    "fft_hfftn",
+    "fft_ifft",
+    "fft_ifft2",
+    "fft_ifftn",
+    "fft_ihfft",
+    "fft_ihfft2",
+    "fft_ihfftn",
+    "fft_irfft",
+    "fft_irfft2",
+    "fft_irfftn",
+    "fft_rfft",
+    "fft_rfft2",
+    "fft_rfftn",
+    "internal_fft_c2c",
+    "internal_fft_c2r",
+    "internal_fft_r2c",
+    "special_airy_ai",
+    "special_bessel_j1",
+    "special_bessel_j0",
+    "special_bessel_y1",
+    "special_bessel_y0",
+    "special_chebyshev_polynomial_t",
+    "special_chebyshev_polynomial_u",
+    "special_chebyshev_polynomial_v",
+    "special_chebyshev_polynomial_w",
+    "special_erfcx",
+    "special_gammainc",
+    "special_gammaincc",
+    "special_hermite_polynomial_h",
+    "special_hermite_polynomial_he",
+    "special_i1",
+    "special_i1e",
+    "special_laguerre_polynomial_l",
+    "special_legendre_polynomial_p",
+    "special_log_ndtr",
+    "special_modified_bessel_i0",
+    "special_modified_bessel_i1",
+    "special_modified_bessel_k0",
+    "special_modified_bessel_k1",
+    "special_ndtri",
+    "special_scaled_modified_bessel_k0",
+    "special_scaled_modified_bessel_k1",
+    "special_shifted_chebyshev_polynomial_t",
+    "special_shifted_chebyshev_polynomial_u",
+    "special_shifted_chebyshev_polynomial_v",
+    "special_shifted_chebyshev_polynomial_w",
+    "special_spherical_bessel_j0",
+    "special_zeta",
+}
+
+# PyTorch reference kernels rejected Half/BFloat16 for these wrappers in the
+# September 21 cross-platform run. Keep their comparable path on Float32 only.
+_FP32_ONLY_LOW_PRECISION_OPS = {
+    "avg_pool2d_backward",
+    "batch_norm_elemt",
+    "bucketize",
+    "cholesky",
+    "cholesky_inverse",
+    "cholesky_solve",
+    "complex",
+    "elu_backward",
+    "frexp",
+    "geqrf",
+    "histc",
+    "internal_linalg_det",
+    "internal_linalg_eigh",
+    "internal_linalg_slogdet",
+    "internal_linalg_solve_ex",
+    "internal_linalg_svd",
+    "internal_upsample_bicubic2d_aa",
+    "internal_upsample_bicubic2d_aa_backward",
+    "internal_upsample_bilinear2d_aa",
+    "internal_upsample_bilinear2d_aa_backward",
+    "inverse",
+    "isin",
+    "linalg_cholesky",
+    "linalg_cholesky_ex",
+    "linalg_cond",
+    "linalg_det",
+    "linalg_eig",
+    "linalg_eigh",
+    "linalg_eigvals",
+    "linalg_eigvalsh",
+    "linalg_householder_product",
+    "linalg_inv",
+    "linalg_inv_ex",
+    "linalg_ldl_factor",
+    "linalg_ldl_factor_ex",
+    "linalg_ldl_solve",
+    "linalg_lu",
+    "linalg_lu_factor",
+    "linalg_lu_factor_ex",
+    "linalg_lu_solve",
+    "linalg_matrix_norm",
+    "linalg_matrix_rank",
+    "linalg_pinv",
+    "linalg_qr",
+    "linalg_slogdet",
+    "linalg_solve",
+    "linalg_solve_ex",
+    "linalg_solve_triangular",
+    "linalg_svd",
+    "linalg_svdvals",
+    "linalg_tensorinv",
+    "linalg_tensorsolve",
+    "lu_solve",
+    "max_unpool2d",
+    "max_unpool3d",
+    "multilabel_margin_loss",
+    "multilabel_margin_loss_forward",
+    "nextafter",
+    "nll_loss2d",
+    "nll_loss2d_forward",
+    "nuclear_norm",
+    "orgqr",
+    "ormqr",
+    "polar",
+    "qr",
+    "searchsorted",
+    "slogdet",
+    "svd",
+    "triangular_solve",
+}
+
+_FP32_ONLY_OPS = _FP32_ONLY_SPECIAL_OPS | _FP32_ONLY_LOW_PRECISION_OPS
+
+_ELEMENTWISE_LOSS_OPS = {
+    "binary_cross_entropy",
+    "huber_loss",
+    "mse_loss",
+    "smooth_l1_loss",
+    "soft_margin_loss",
+}
+
+_BACKEND_UNSUPPORTED_ON_ALL_PLATFORMS = {
+    "mkldnn_adaptive_avg_pool2d",
+}
+_BACKEND_UNSUPPORTED_ON_COMMON_PLATFORMS = {
+    "histogram",
+    "internal_add_relu",
+    "narrow_copy",
+    "slow_conv3d",
+    "slow_conv3d_forward",
+}
+_BACKEND_UNSUPPORTED_BY_PLATFORM = {
+    "nvidia-a100": _BACKEND_UNSUPPORTED_ON_COMMON_PLATFORMS,
+    "metax-c550": _BACKEND_UNSUPPORTED_ON_COMMON_PLATFORMS,
+    "moore-s5000": _BACKEND_UNSUPPORTED_ON_COMMON_PLATFORMS,
+    "iluvatar-tg150": _BACKEND_UNSUPPORTED_ON_COMMON_PLATFORMS,
+}
+_BACKEND_UNSUPPORTED_BY_PLATFORM_DTYPE = {
+    ("moore-s5000", "float32"): {"batch_norm_elemt"},
+}
+
+_FALLBACK_UNSUPPORTED_SPECIAL_OPS = {
+    "special_chebyshev_polynomial_t",
+    "special_chebyshev_polynomial_u",
+    "special_chebyshev_polynomial_v",
+    "special_chebyshev_polynomial_w",
+    "special_hermite_polynomial_h",
+    "special_hermite_polynomial_he",
+    "special_laguerre_polynomial_l",
+    "special_legendre_polynomial_p",
+    "special_modified_bessel_i0",
+    "special_modified_bessel_i1",
+    "special_modified_bessel_k0",
+    "special_modified_bessel_k1",
+    "special_scaled_modified_bessel_k0",
+    "special_scaled_modified_bessel_k1",
+    "special_shifted_chebyshev_polynomial_t",
+    "special_shifted_chebyshev_polynomial_u",
+    "special_shifted_chebyshev_polynomial_v",
+    "special_shifted_chebyshev_polynomial_w",
+    "special_spherical_bessel_j0",
+}
+_LOW_PRECISION_FALLBACK_UNSUPPORTED_PLATFORMS = {
+    "nvidia-a100",
+    "metax-c550",
+    "moore-s5000",
+    "iluvatar-tg150",
+}
+_FALLBACK_UNSUPPORTED_BY_PLATFORM_DTYPE = {
+    ("metax-c550", "float32"): {"special_bessel_j1", "special_bessel_y1"},
+    ("moore-s5000", "float32"): _FALLBACK_UNSUPPORTED_SPECIAL_OPS,
+}
+
 _MATRIX_SHAPES = {
+    "sspaddmm": [[8, 16], [8, 128], [128, 16]],
     "mm": [[64, 128], [128, 64]],
     "matmul": [[64, 128], [128, 64]],
     "bmm": [[4, 64, 128], [4, 128, 64]],
@@ -216,6 +420,9 @@ _CONV_3D_OPS = {
 
 _CPU_VALIDATION_ONLY_OPS = {
     "histogram",
+    "linspace",
+    "logspace",
+    "sspaddmm",
 }
 
 _ZERO_INITIALIZED_OUTPUT_OPS = {
@@ -226,6 +433,7 @@ _ZERO_INITIALIZED_OUTPUT_OPS = {
 _POSITIVE_DEFINITE_OPS = {
     "cholesky",
     "cholesky_inverse",
+    "linalg_pinv",
     "linalg_cholesky",
     "linalg_cholesky_ex",
 }
@@ -318,6 +526,8 @@ _NONDETERMINISTIC_OPS = {
 }
 
 _SCALAR_OVERRIDES = {
+    ("diff", "n"): 1,
+    ("diff", "dim"): -1,
     ("hardtanh", "min_val"): -1.0,
     ("hardtanh", "max_val"): 1.0,
     ("clamp", "min"): -1.0,
@@ -334,6 +544,10 @@ _SCALAR_OVERRIDES = {
     ("elu", "alpha"): 1.0,
     ("elu", "scale"): 1.0,
     ("elu", "input_scale"): 1.0,
+    ("elu_backward", "alpha"): 1.0,
+    ("elu_backward", "scale"): 1.0,
+    ("elu_backward", "input_scale"): 1.0,
+    ("elu_backward", "is_result"): False,
     ("sub", "alpha"): 1.0,
     ("add", "alpha"): 1.0,
     ("addcdiv", "value"): 1.0,
@@ -370,13 +584,35 @@ _SCALAR_OVERRIDES = {
     ("matrix_power", "n"): 3,
     ("max_unpool2d", "output_size"): [16, 16],
     ("max_unpool3d", "output_size"): [8, 8, 8],
+    ("fractional_max_pool2d", "kernel_size"): [2, 2],
+    ("fractional_max_pool2d", "output_size"): [4, 4],
+    ("fractional_max_pool2d_backward", "kernel_size"): [2, 2],
+    ("fractional_max_pool2d_backward", "output_size"): [4, 4],
+    ("fractional_max_pool3d", "kernel_size"): [2, 2, 2],
+    ("fractional_max_pool3d", "output_size"): [2, 2, 2],
+    ("fractional_max_pool3d_backward", "kernel_size"): [2, 2, 2],
+    ("fractional_max_pool3d_backward", "output_size"): [2, 2, 2],
+    ("rrelu_with_noise", "lower"): 0.125,
+    ("rrelu_with_noise", "upper"): 0.333,
+    ("rrelu_with_noise", "training"): False,
     ("max_unpool3d", "stride"): [2, 2, 2],
     ("max_unpool3d", "padding"): [0, 0, 0],
-    ("linspace", "steps"): 256,
-    ("logspace", "steps"): 256,
+    ("binary_cross_entropy", "reduction"): 0,
+    ("huber_loss", "reduction"): 0,
+    ("mse_loss", "reduction"): 0,
+    ("smooth_l1_loss", "reduction"): 0,
+    ("soft_margin_loss", "reduction"): 0,
+    ("logspace", "base"): 10.0,
     ("nanquantile", "interpolation"): "linear",
     ("quantile", "interpolation"): "linear",
     ("special_multigammaln", "p"): 2,
+    ("multi_margin_loss", "p"): 2.0,
+    ("multi_margin_loss", "margin"): 1.0,
+    ("multi_margin_loss_backward", "p"): 2.0,
+    ("multi_margin_loss_backward", "margin"): 1.0,
+    ("nll_loss", "ignore_index"): -100,
+    ("nll_loss_backward", "ignore_index"): -100,
+    ("nll_loss2d_backward", "ignore_index"): -100,
     ("linalg_eigh", "UPLO"): "L",
     ("linalg_eigvalsh", "UPLO"): "L",
     ("_linalg_eigh", "UPLO"): "L",
@@ -428,6 +664,101 @@ def canonical_schemas(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     return [selected[name] for name in sorted(selected)]
 
 
+def schema_category_code(schema: dict[str, Any]) -> str:
+    op_name = str(schema.get("name", ""))
+    semantic_category, _ = _classify_semantics(op_name)
+    return _coarse_category_code(
+        {"op_name": op_name, "semantic_category": semantic_category}
+    )
+
+
+def select_schemas(
+    schemas: list[dict[str, Any]],
+    *,
+    requested_ops: set[str] | None,
+    excluded_categories: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected = schemas
+    if requested_ops is not None:
+        selected = [schema for schema in selected if schema["name"] in requested_ops]
+    if not excluded_categories:
+        return selected, []
+
+    included = [
+        schema
+        for schema in selected
+        if schema_category_code(schema) not in excluded_categories
+    ]
+    excluded = [
+        schema
+        for schema in selected
+        if schema_category_code(schema) in excluded_categories
+    ]
+    return included, excluded
+
+
+def select_dtype_supported_schemas(
+    schemas: list[dict[str, Any]],
+    *,
+    dtype: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split out wrappers whose benchmark policy does not include dtype."""
+
+    if dtype not in {"float16", "bfloat16"}:
+        return schemas, []
+    included = [
+        schema
+        for schema in schemas
+        if schema["name"] not in _FP32_ONLY_OPS
+    ]
+    excluded = [
+        schema
+        for schema in schemas
+        if schema["name"] in _FP32_ONLY_OPS
+    ]
+    return included, excluded
+
+
+def select_platform_supported_schemas(
+    schemas: list[dict[str, Any]],
+    *,
+    platform: str,
+    dtype: str,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Split platform backend gaps and reference-fallback gaps before dispatch."""
+
+    backend_unsupported = (
+        _BACKEND_UNSUPPORTED_BY_PLATFORM.get(platform, set())
+        | _BACKEND_UNSUPPORTED_ON_ALL_PLATFORMS
+        | _BACKEND_UNSUPPORTED_BY_PLATFORM_DTYPE.get((platform, dtype), set())
+    )
+    fallback_unsupported = set(
+        _FALLBACK_UNSUPPORTED_BY_PLATFORM_DTYPE.get((platform, dtype), set())
+    )
+    if dtype in {"float16", "bfloat16"} and platform in (
+        _LOW_PRECISION_FALLBACK_UNSUPPORTED_PLATFORMS
+    ):
+        fallback_unsupported.update({"igamma", "igammac"})
+
+    included = [
+        schema
+        for schema in schemas
+        if schema["name"] not in backend_unsupported
+        and schema["name"] not in fallback_unsupported
+    ]
+    backend_excluded = [
+        schema for schema in schemas if schema["name"] in backend_unsupported
+    ]
+    fallback_excluded = [
+        schema for schema in schemas if schema["name"] in fallback_unsupported
+    ]
+    return included, backend_excluded, fallback_excluded
+
+
 def _list_size(aten_type: str) -> int:
     if "[" not in aten_type or "]" not in aten_type:
         return 1
@@ -440,6 +771,8 @@ def scalar_value(op_name: str, param: dict[str, Any]) -> Any:
 
     name = param.get("name", "")
     aten_type = param.get("type", "")
+    if op_name in {"linspace", "logspace"} and name == "steps":
+        return _DEFAULT_SHAPE[-1]
     override = _SCALAR_OVERRIDES.get((op_name, name))
     if override is not None:
         return override
@@ -546,10 +879,14 @@ def recipe_for_tensor(
         shape = [2, 8, 16, 16]
         if "backward" in op_name and tensor_index == 0:
             shape = [2, 8, 8, 8]
+        if "fractional" in op_name and param_name == "random_samples":
+            return {"shape": [2, 8, 2], "dtype": default_dtype, "kind": "probability"}
     elif "pool3d" in op_name:
         shape = [2, 4, 8, 8, 8]
         if "backward" in op_name and tensor_index == 0:
             shape = [2, 4, 4, 4, 4]
+        if "fractional" in op_name and param_name == "random_samples":
+            return {"shape": [2, 4, 3], "dtype": default_dtype, "kind": "probability"}
     elif op_name in _PAD_2D_OPS:
         shape = [2, 4, 18, 18] if "backward" in op_name and tensor_index == 0 else [2, 4, 16, 16]
     elif op_name in _PAD_3D_OPS:
@@ -735,6 +1072,9 @@ def recipe_for_tensor(
             "high": 128,
         }
 
+    if op_name == "masked_select" and lowered == "mask":
+        return {"shape": shape, "dtype": "bool", "kind": "all_true"}
+
     if "mask" in lowered:
         return {"shape": shape, "dtype": "bool", "kind": "boolean"}
 
@@ -854,6 +1194,7 @@ def build_worker_command(
     device: str,
     dtype: str,
     min_run_time: float,
+    benchmark_iterations: int = 0,
 ) -> list[str]:
     return [
         python,
@@ -869,6 +1210,8 @@ def build_worker_command(
         dtype,
         "--min-run-time",
         str(min_run_time),
+        "--benchmark-iterations",
+        str(benchmark_iterations),
     ]
 
 
@@ -881,6 +1224,7 @@ def build_worker_batch_command(
     device: str,
     dtype: str,
     min_run_time: float,
+    benchmark_iterations: int = 0,
 ) -> list[str]:
     return [
         python,
@@ -896,6 +1240,8 @@ def build_worker_batch_command(
         dtype,
         "--min-run-time",
         str(min_run_time),
+        "--benchmark-iterations",
+        str(benchmark_iterations),
     ]
 
 
@@ -1036,6 +1382,8 @@ def _make_tensor(torch: Any, recipe: dict[str, Any], device: str) -> Any:
         return torch.randint(1, 16, shape, dtype=dtype, device=device)
     if kind == "boolean":
         return torch.rand(shape, device=device) > 0.5
+    if kind == "all_true":
+        return torch.ones(shape, dtype=dtype, device=device)
     if kind == "positive":
         return torch.rand(shape, dtype=dtype, device=device) + 0.5
     if kind == "unit_interval":
@@ -1079,6 +1427,10 @@ def _relate_inputs(
         inputs[positions[name]] = value
 
     note = ""
+    if aten_name in {"linspace", "logspace"} and has("start", "end"):
+        put("end", float(get("end").item()))
+        note = "end converted from a device scalar to a Python scalar"
+
     if aten_name in {"_softmax_backward_data", "_log_softmax_backward_data"}:
         source = torch.randn_like(get("output"))
         output = (
@@ -1089,6 +1441,103 @@ def _relate_inputs(
         put("output", output)
         put("input_dtype", _torch_dtype(torch, dtype_name))
         note = "forward-derived softmax output and explicit input dtype"
+
+    elif aten_name == "rrelu_with_noise":
+        input_value = get("input")
+        put("noise", torch.randn_like(input_value))
+        note = "noise derived from input shape"
+
+    elif aten_name in {"multi_margin_loss", "nll_loss"} and has("target"):
+        input_value = get("input")
+        put(
+            "target",
+            torch.randint(
+                0,
+                int(input_value.shape[1]),
+                [int(input_value.shape[0])],
+                dtype=torch.int64,
+                device=input_value.device,
+            ),
+        )
+        note = "class target derived from input batch and class dimensions"
+
+    elif aten_name == "sspaddmm":
+        if not get("input").is_sparse:
+            put("input", get("input").to_sparse())
+        if not get("mat1").is_sparse:
+            put("mat1", get("mat1").to_sparse())
+        note = "input and mat1 converted to COO sparse tensors"
+
+    elif aten_name == "linalg_pinv":
+        put(
+            "rcond",
+            torch.tensor(
+                1e-5,
+                dtype=get("input").dtype,
+                device=get("input").device,
+            ),
+        )
+        note = "rcond scalar derived from input dtype"
+
+    elif aten_name in {
+        "gather",
+        "index_add",
+        "index_copy",
+        "index_fill",
+        "index_reduce",
+        "index_select",
+        "scatter",
+        "scatter_add",
+        "scatter_reduce",
+    }:
+        input_value = get("input")
+        dim = 1 if len(input_value.shape) > 1 else 0
+        count = min(4, int(input_value.shape[dim]))
+        put("dim", dim)
+
+        if aten_name in {
+            "index_add",
+            "index_copy",
+            "index_fill",
+            "index_reduce",
+            "index_select",
+        }:
+            index_shape = [count]
+        elif aten_name == "gather":
+            index_shape = list(input_value.shape)
+            index_shape[dim] = count
+        else:
+            index_shape = list(input_value.shape)
+            index_shape[dim] = count
+        source_shape = list(input_value.shape)
+        source_shape[dim] = count
+
+        put(
+            "index",
+            torch.randint(
+                0,
+                int(input_value.shape[dim]),
+                index_shape,
+                dtype=torch.int64,
+                device=input_value.device,
+            ),
+        )
+
+        source_name = "src" if has("src") else "source"
+        if has(source_name):
+            put(
+                source_name,
+                torch.randn(
+                    source_shape,
+                    dtype=input_value.dtype,
+                    device=input_value.device,
+                ),
+            )
+        if aten_name == "index_fill" and has("value"):
+            put("value", 0.5)
+        if aten_name == "index_reduce" and has("include_self"):
+            put("include_self", True)
+        note = f"index and source derived for dim={dim}"
 
     elif aten_name in {"adaptive_max_pool2d_backward", "adaptive_max_pool3d_backward"}:
         input_value = get("input")
@@ -1261,16 +1710,42 @@ def _resolve_aten_reference(
     if packet is None or not hasattr(packet, "overloads"):
         return None, params
 
+    params_by_name = {str(param.get("name", "")): param for param in params}
+
+    def matching_param(argument: Any, param_name: str) -> dict[str, Any] | None:
+        names = [param_name]
+        if param_name == "self":
+            names.append("input")
+        elif param_name == "input":
+            names.append("self")
+        for name in names:
+            value = params_by_name.get(name)
+            if value is not None:
+                return value
+        return None
+
     candidates = []
     for overload_name in packet.overloads():
         overload = getattr(packet, overload_name)
         arguments = list(overload._schema.arguments)
-        if len(arguments) != len(params):
-            continue
+        matched: list[tuple[dict[str, Any], Any]] = []
+        selected_arguments: list[Any] = []
         score = 0
-        for param, argument in zip(params, arguments):
+        for argument in arguments:
+            param_name = str(argument.name)
+            param = matching_param(argument, param_name)
+            if param is None:
+                # Generated wrappers omit some optional ATen arguments such as
+                # rrelu_with_noise's Generator? parameter.
+                argument_type = str(argument.type)
+                if argument_type.endswith("?") or argument_type.startswith("Optional["):
+                    continue
+                score = -1
+                break
             param_name = str(param.get("name", "")).lower()
-            argument_name = str(argument.name).lower()
+            argument_name = param_name
+            matched.append((param, argument))
+            selected_arguments.append(argument)
             if param_name == argument_name or {param_name, argument_name} <= {
                 "input",
                 "self",
@@ -1280,7 +1755,9 @@ def _resolve_aten_reference(
             argument_type = str(argument.type).replace("SymInt", "int")
             if param_type.rstrip("?").split("(", 1)[0] in argument_type:
                 score += 1
-        candidates.append((score, overload_name == "out", overload, arguments))
+        if score < 0:
+            continue
+        candidates.append((score, overload_name == "out", overload, selected_arguments))
 
     if not candidates:
         return None, params
@@ -1289,12 +1766,15 @@ def _resolve_aten_reference(
         candidates,
         key=lambda item: (item[0], not item[1]),
     )
-    annotated = []
-    for param, argument in zip(params, arguments):
+    selected_params = []
+    for argument in arguments:
+        param = matching_param(argument, str(argument.name))
+        if param is None:
+            return None, params
         value = dict(param)
         value["keyword_only"] = bool(argument.kwarg_only)
-        annotated.append(value)
-    return overload, annotated
+        selected_params.append(value)
+    return overload, selected_params
 
 
 def _reference_function(torch: Any, aten_name: str) -> Any:
@@ -1319,6 +1799,32 @@ def _reference_function(torch: Any, aten_name: str) -> Any:
         return histogram_cpu
     if aten_name == "mkldnn_adaptive_avg_pool2d":
         return torch.nn.functional.adaptive_avg_pool2d
+    if aten_name in _ELEMENTWISE_LOSS_OPS:
+        # torch.nn.functional exposes legacy size_average/reduce arguments
+        # before reduction; use the ATen overload whose layout matches metadata.
+        return getattr(torch.ops.aten, aten_name).default
+    if aten_name == "linspace":
+        return torch.ops.aten.linspace.Tensor_Scalar
+    if aten_name == "logspace":
+        return torch.ops.aten.logspace.Tensor_Scalar
+    if aten_name in {
+        "fractional_max_pool2d",
+        "fractional_max_pool3d",
+    }:
+        return getattr(torch.ops.aten, aten_name).default
+    if aten_name == "sspaddmm":
+        def sspaddmm_cpu(input, mat1, mat2, beta, alpha):
+            device = input.device
+            dtype = input.dtype
+            result = input.cpu().sspaddmm(
+                mat1.cpu(),
+                mat2.cpu(),
+                beta=beta,
+                alpha=alpha,
+            )
+            return result.to(device=device, dtype=dtype)
+
+        return sspaddmm_cpu
     if aten_name in {"slow_conv3d", "slow_conv3d_forward"}:
         return lambda input, weight, kernel_size, bias, stride, padding: (
             torch.nn.functional.conv3d(
@@ -1388,10 +1894,129 @@ def _assert_close(torch: Any, actual: Any, expected: Any, dtype_name: str) -> No
         raise AssertionError("integer outputs differ")
 
 
-def _measure_us(torch: Any, fn: Any, min_run_time: float, device: str) -> float:
+def _supports_infini_only_reference_fallback(schema: dict[str, Any]) -> bool:
+    """Whether an output tensor can be derived without a reference result."""
+
+    op_name = str(schema.get("aten_name", schema.get("name", "")))
+    semantic_category, _ = _classify_semantics(op_name)
+    _, _, _, out_params = schema_parameter_groups(schema)
+    return (
+        semantic_category == "特殊数学函数"
+        and len(out_params) == 1
+        and bool(out_params[0].get("is_tensor"))
+    )
+
+
+def _try_infini_only_reference_fallback(
+    *,
+    torch: Any,
+    infini_ops: Any,
+    schema: dict[str, Any],
+    result: dict[str, Any],
+    inputs: list[Any],
+    device: str,
+    min_run_time: float,
+    benchmark_iterations: int,
+    implementation_index: int,
+    reference_error: str,
+) -> bool:
+    """Benchmark a same-shape special function when PyTorch has no reference."""
+
+    if not _supports_infini_only_reference_fallback(schema):
+        return False
+
+    clean_reference_error = _clean_error(reference_error)
+    try:
+        tensor_inputs = [value for value in inputs if hasattr(value, "shape")]
+        if not tensor_inputs:
+            raise RuntimeError("schema has no tensor input from which to derive output")
+        output_dtype = tensor_inputs[0].dtype
+        if not _supported_infini_dtype(torch, tensor_inputs[0]):
+            raise RuntimeError(
+                f"InfiniOps DataType does not support input dtype {output_dtype}"
+            )
+        output_shape = torch.broadcast_shapes(
+            *(value.shape for value in tensor_inputs)
+        )
+        infini_inputs = [_clone_value(torch, value) for value in inputs]
+        infini_outputs = (
+            torch.empty(output_shape, dtype=output_dtype, device=device),
+        )
+        infini_args = [*infini_inputs, *infini_outputs]
+        infini_function = getattr(infini_ops, schema["name"])
+
+        def call_infini() -> Any:
+            return infini_function(
+                *infini_args,
+                implementation_index=implementation_index,
+            )
+
+        try:
+            call_infini()
+            _synchronize(torch, device)
+            infini_us = _measure_us(
+                torch, call_infini, min_run_time, device, benchmark_iterations
+            )
+            _synchronize(torch, device)
+        except Exception as exc:  # noqa: BLE001
+            result.update(
+                status="backend_runtime_error",
+                reference_error=clean_reference_error,
+                ref_mode="unavailable",
+                validation_mode="infini_only_failed",
+                error=_clean_error(
+                    f"InfiniOps-only fallback failed: {type(exc).__name__}: {exc}"
+                ),
+            )
+            return True
+    except Exception as exc:  # noqa: BLE001
+        result.update(
+            status="infini_only_unsupported",
+            reference_error=clean_reference_error,
+            ref_mode="unavailable",
+            validation_mode="infini_only_failed",
+            error=_clean_error(
+                f"cannot derive InfiniOps-only output: {type(exc).__name__}: {exc}"
+            ),
+        )
+        return True
+
+    result.update(
+        status="success",
+        infini_us=round(infini_us, 3),
+        ref_us=None,
+        speedup=None,
+        ref_mode="unavailable",
+        validation_mode="infini_only",
+        reference_error=clean_reference_error,
+        error="",
+    )
+    return True
+
+
+def _measure_us(
+    torch: Any,
+    fn: Any,
+    min_run_time: float,
+    device: str,
+    benchmark_iterations: int = 0,
+) -> float:
     device_type = _device_type(device)
     if device_type in {"cpu", "cuda"}:
         timer = torch.utils.benchmark.Timer(stmt="fn()", globals={"fn": fn})
+        if benchmark_iterations > 0:
+            measurement = timer.timeit(number=benchmark_iterations)
+            median = getattr(measurement, "median", None)
+            if callable(median):
+                median = median()
+            if median is not None:
+                return float(median) * 1e6
+            total_seconds = getattr(measurement, "total_seconds", None)
+            if callable(total_seconds):
+                return float(total_seconds()) * 1e6
+            raise TypeError(
+                "benchmark measurement has neither median nor total_seconds"
+            )
         return timer.blocked_autorange(min_run_time=min_run_time).median * 1e6
 
     for _ in range(5):
@@ -1440,6 +2065,7 @@ def _base_result(schema: dict[str, Any], requested_dtype: str) -> dict[str, Any]
         "speedup": None,
         "ref_mode": "functional",
         "validation_mode": "exact",
+        "reference_error": "",
         "error": "",
     }
 
@@ -1524,6 +2150,7 @@ def run_worker(args: argparse.Namespace) -> int:
                         device=args.device,
                         dtype_name=args.dtype,
                         min_run_time=args.min_run_time,
+                        benchmark_iterations=args.benchmark_iterations,
                         implementation_index=implementation_index,
                     )
         except RecipeError as exc:
@@ -1552,6 +2179,7 @@ def _run_schema_case(
     device: str,
     dtype_name: str,
     min_run_time: float,
+    benchmark_iterations: int,
     implementation_index: int,
 ) -> int:
     aten_name = schema.get("aten_name", schema["name"])
@@ -1599,10 +2227,19 @@ def _run_schema_case(
     result["dtype"] = str(effective_dtype).removeprefix("torch.")
 
     reference = _reference_function(torch, aten_name)
-    reference_inputs = [_clone_value(torch, value) for value in inputs]
+    values_by_name = {
+        param["name"]: _clone_value(torch, value)
+        for param, value in zip(in_params, inputs)
+    }
+    reference_schema_params = list(in_params)
+    if aten_name == "rrelu_with_noise":
+        values_by_name["noise"] = torch.randn_like(values_by_name["input"])
     aten_reference, reference_params = _resolve_aten_reference(
-        torch, aten_name, in_params
+        torch, aten_name, reference_schema_params
     )
+    reference_inputs = [
+        values_by_name[param["name"]] for param in reference_params
+    ]
     reference_args, reference_kwargs = split_reference_arguments(
         reference_params, reference_inputs
     )
@@ -1610,9 +2247,24 @@ def _run_schema_case(
         reference_value = reference(*reference_args, **reference_kwargs)
     except Exception as exc:  # noqa: BLE001
         if aten_reference is None or aten_reference is reference:
+            reference_error = f"{type(exc).__name__}: {exc}"
+            if _try_infini_only_reference_fallback(
+                torch=torch,
+                infini_ops=infini_ops,
+                schema=schema,
+                result=result,
+                inputs=inputs,
+                device=device,
+                min_run_time=min_run_time,
+                benchmark_iterations=benchmark_iterations,
+                implementation_index=implementation_index,
+                reference_error=reference_error,
+            ):
+                return 0
             result.update(
                 status="reference_rejected",
-                error=_clean_error(f"{type(exc).__name__}: {exc}"),
+                reference_error=_clean_error(reference_error),
+                error=_clean_error(reference_error),
             )
             return 0
         try:
@@ -1620,12 +2272,27 @@ def _run_schema_case(
             reference_value = reference(*reference_args, **reference_kwargs)
             result["ref_mode"] = "aten_functional"
         except Exception as aten_exc:  # noqa: BLE001
+            reference_error = (
+                f"{type(exc).__name__}: {exc}; ATen fallback: "
+                f"{type(aten_exc).__name__}: {aten_exc}"
+            )
+            if _try_infini_only_reference_fallback(
+                torch=torch,
+                infini_ops=infini_ops,
+                schema=schema,
+                result=result,
+                inputs=inputs,
+                device=device,
+                min_run_time=min_run_time,
+                benchmark_iterations=benchmark_iterations,
+                implementation_index=implementation_index,
+                reference_error=reference_error,
+            ):
+                return 0
             result.update(
                 status="reference_rejected",
-                error=_clean_error(
-                    f"{type(exc).__name__}: {exc}; ATen fallback: "
-                    f"{type(aten_exc).__name__}: {aten_exc}"
-                ),
+                reference_error=_clean_error(reference_error),
+                error=_clean_error(reference_error),
             )
             return 0
 
@@ -1637,6 +2304,12 @@ def _run_schema_case(
     if not all(isinstance(value, torch.Tensor) for value in reference_outputs):
         result.update(status="reference_unsupported", error="reference returned a non-tensor value")
         return 0
+    if aten_name in {"linspace", "logspace"}:
+        # ATen constructs these references on CPU when one endpoint is a Python
+        # scalar. Move the expected value to the device used by explicit out.
+        reference_outputs = tuple(
+            value.to(device=device, dtype=value.dtype) for value in reference_outputs
+        )
 
     if (
         not is_implicit_inplace
@@ -1694,7 +2367,14 @@ def _run_schema_case(
             else torch.empty_like
         )
         infini_outputs = tuple(output_factory(value) for value in reference_outputs)
-        infini_args = [*infini_inputs, *infini_outputs]
+        if aten_name == "rrelu_with_noise":
+            infini_outputs = (
+                infini_outputs[0],
+                _clone_value(torch, values_by_name["noise"]),
+            )
+            infini_args = [*infini_inputs[:-1], *infini_outputs]
+        else:
+            infini_args = [*infini_inputs, *infini_outputs]
 
     infini_function = getattr(infini_ops, schema["name"])
 
@@ -1729,7 +2409,10 @@ def _run_schema_case(
         result.update(status="correctness_failed", error=_clean_error(exc))
         return 0
 
-    reference_benchmark_inputs = [_clone_value(torch, value) for value in inputs]
+    reference_benchmark_inputs = [
+        _clone_value(torch, values_by_name[param["name"]])
+        for param in reference_params
+    ]
     reference_benchmark_args, reference_benchmark_kwargs = split_reference_arguments(
         reference_params, reference_benchmark_inputs
     )
@@ -1760,11 +2443,15 @@ def _run_schema_case(
             result["ref_mode"] = "functional"
 
     try:
-        infini_us = _measure_us(torch, call_infini, min_run_time, device)
+        infini_us = _measure_us(
+            torch, call_infini, min_run_time, device, benchmark_iterations
+        )
         ref_us = (
             None
             if aten_name in _CPU_VALIDATION_ONLY_OPS
-            else _measure_us(torch, reference_call, min_run_time, device)
+            else _measure_us(
+                torch, reference_call, min_run_time, device, benchmark_iterations
+            )
         )
         _synchronize(torch, device)
     except Exception as exc:  # noqa: BLE001
@@ -1806,14 +2493,67 @@ def run_parent(args: argparse.Namespace) -> int:
     metadata_path = Path(args.metadata).resolve()
     metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     schemas = canonical_schemas(metadata_payload)
+    requested = None
     if args.ops:
-        requested = {name.strip() for value in args.ops for name in value.split(",") if name.strip()}
-        schemas = [schema for schema in schemas if schema["name"] in requested]
+        requested = {
+            name.strip()
+            for value in args.ops
+            for name in value.split(",")
+            if name.strip()
+        }
+    excluded_categories = {
+        value.strip()
+        for value in args.exclude_categories.split(",")
+        if value.strip() and value.strip().lower() != "none"
+    }
+    schemas, excluded_schemas = select_schemas(
+        schemas,
+        requested_ops=requested,
+        excluded_categories=excluded_categories,
+    )
+    schemas, dtype_excluded_schemas = select_dtype_supported_schemas(
+        schemas,
+        dtype=args.dtype,
+    )
+    schemas, platform_excluded_schemas, fallback_excluded_schemas = (
+        select_platform_supported_schemas(
+            schemas,
+            platform=args.platform,
+            dtype=args.dtype,
+        )
+    )
     if args.limit is not None:
         schemas = schemas[: args.limit]
 
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "excluded-operators.json").write_text(
+        json.dumps(
+            {
+                "categories": sorted(excluded_categories),
+                "count": len(excluded_schemas),
+                "operators": [schema["name"] for schema in excluded_schemas],
+                "dtype": args.dtype,
+                "dtype_excluded_count": len(dtype_excluded_schemas),
+                "dtype_excluded_operators": [
+                    schema["name"] for schema in dtype_excluded_schemas
+                ],
+                "platform": args.platform,
+                "platform_excluded_count": len(platform_excluded_schemas),
+                "platform_excluded_operators": [
+                    schema["name"] for schema in platform_excluded_schemas
+                ],
+                "fallback_excluded_count": len(fallback_excluded_schemas),
+                "fallback_excluded_operators": [
+                    schema["name"] for schema in fallback_excluded_schemas
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     checkpoint_path = output_dir / "results.jsonl"
     prior: dict[str, dict[str, Any]] = {}
     if args.resume and checkpoint_path.exists():
@@ -1856,6 +2596,7 @@ def run_parent(args: argparse.Namespace) -> int:
             device=args.device,
             dtype=args.dtype,
             min_run_time=args.min_run_time,
+            benchmark_iterations=args.benchmark_iterations,
         )
         started = time.monotonic()
         worker_rows: dict[str, dict[str, Any]] = {}
@@ -1929,10 +2670,14 @@ def run_parent(args: argparse.Namespace) -> int:
         "metadata_schema_count": len(metadata_payload.get("ops", [])),
         "canonical_wrapper_count": len(canonical_schemas(metadata_payload)),
         "attempted_wrapper_count": len(schemas),
+        "excluded_categories": sorted(excluded_categories),
+        "excluded_wrapper_count": len(excluded_schemas),
+        "dtype_excluded_wrapper_count": len(dtype_excluded_schemas),
         "per_op_timeout_s": args.timeout,
         "worker_batch_size": batch_size,
         "worker_batch_timeout_s": args.batch_timeout,
         "min_run_time_s": args.min_run_time,
+        "benchmark_iterations": args.benchmark_iterations,
         "command": " ".join(sys.argv),
         "python": sys.version.replace("\n", " "),
     }
@@ -1948,8 +2693,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="full-operator-results")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="float16")
+    parser.add_argument(
+        "--platform",
+        default=os.environ.get("INFINIOPS_BENCHMARK_PLATFORM", "unknown"),
+        help="benchmark platform ID used for known backend-support exclusions",
+    )
     parser.add_argument("--sha", default="unknown")
     parser.add_argument("--min-run-time", type=float, default=0.05)
+    parser.add_argument(
+        "--benchmark-iterations",
+        type=int,
+        default=0,
+        help=(
+            "run a fixed number of timing iterations; 0 uses adaptive timing"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--worker-batch-size", type=int, default=1)
     parser.add_argument(
@@ -1959,6 +2717,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--ops", action="append", help="comma-separated wrapper names")
+    parser.add_argument(
+        "--exclude-categories",
+        default="none",
+        help=(
+            "comma-separated semantic category codes to skip; default is none."
+            " Use special to skip FFT and special-function diagnostics."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--script", help=argparse.SUPPRESS)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -1969,6 +2735,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.benchmark_iterations < 0:
+        raise SystemExit("--benchmark-iterations must be a non-negative integer")
     if args.worker:
         if not args.worker_op and not args.worker_ops:
             raise SystemExit("--worker-op or --worker-ops is required in worker mode")

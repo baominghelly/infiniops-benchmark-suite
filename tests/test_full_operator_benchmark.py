@@ -9,12 +9,22 @@ from unittest.mock import Mock, patch
 
 from scripts.full_operator_benchmark import (
     _device_type,
+    _make_tensor,
     _load_device_plugin,
     _manual_seed_all,
+    _measure_us,
+    _reference_function,
     _resolve_aten_reference,
+    _relate_inputs,
     _synchronize,
+    _supports_infini_only_reference_fallback,
+    _try_infini_only_reference_fallback,
+    run_parent,
+    select_dtype_supported_schemas,
+    select_platform_supported_schemas,
     build_worker_command,
     build_worker_batch_command,
+    build_parser,
     canonical_schemas,
     parse_worker_stdout,
     parse_worker_stdout_rows,
@@ -22,6 +32,7 @@ from scripts.full_operator_benchmark import (
     recipe_for_tensor_list,
     scalar_value,
     schema_parameter_groups,
+    select_schemas,
     split_reference_arguments,
     summarize_results,
     write_reports,
@@ -97,6 +108,319 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
         self.assertEqual([schema["name"] for schema in schemas], ["abs", "std"])
         self.assertEqual(schemas[1]["overload_name"], "std.dim")
 
+    def test_special_category_is_excluded_even_for_explicit_profiles(self):
+        schemas = [
+            {"name": "abs"},
+            {"name": "fft_fft"},
+            {"name": "special_gammaln"},
+        ]
+
+        selected, excluded = select_schemas(
+            schemas,
+            requested_ops={"abs", "fft_fft", "special_gammaln"},
+            excluded_categories={"special"},
+        )
+
+        self.assertEqual([schema["name"] for schema in selected], ["abs"])
+        self.assertEqual(
+            [schema["name"] for schema in excluded],
+            ["fft_fft", "special_gammaln"],
+        )
+
+    def test_platform_support_matrix_splits_backend_and_fallback_gaps(self):
+        schemas = [
+            {"name": "abs"},
+            {"name": "histogram"},
+            {"name": "igamma"},
+        ]
+
+        selected, backend_excluded, fallback_excluded = (
+            select_platform_supported_schemas(
+                schemas,
+                platform="moore-s5000",
+                dtype="float16",
+            )
+        )
+
+        self.assertEqual([schema["name"] for schema in selected], ["abs"])
+        self.assertEqual(
+            [schema["name"] for schema in backend_excluded],
+            ["histogram"],
+        )
+        self.assertEqual(
+            [schema["name"] for schema in fallback_excluded],
+            ["igamma"],
+        )
+
+        selected, backend_excluded, fallback_excluded = (
+            select_platform_supported_schemas(
+                [
+                    {"name": "batch_norm_elemt"},
+                    {"name": "special_legendre_polynomial_p"},
+                ],
+                platform="moore-s5000",
+                dtype="float32",
+            )
+        )
+        self.assertEqual(selected, [])
+        self.assertEqual(
+            [schema["name"] for schema in backend_excluded],
+            ["batch_norm_elemt"],
+        )
+        self.assertEqual(
+            [schema["name"] for schema in fallback_excluded],
+            ["special_legendre_polynomial_p"],
+        )
+
+    def test_loss_benchmarks_use_elementwise_reduction_and_profile_sized_ranges(self):
+        for op_name in (
+            "binary_cross_entropy",
+            "huber_loss",
+            "mse_loss",
+            "smooth_l1_loss",
+            "soft_margin_loss",
+        ):
+            self.assertEqual(
+                scalar_value(op_name, {"name": "reduction", "type": "int"}),
+                0,
+            )
+
+        with patch.object(_harness_module, "_DEFAULT_SHAPE", [1, 4096]):
+            self.assertEqual(
+                scalar_value("linspace", {"name": "steps", "type": "int"}),
+                4096,
+            )
+            self.assertEqual(
+                scalar_value("logspace", {"name": "steps", "type": "int"}),
+                4096,
+            )
+            self.assertEqual(
+                scalar_value("logspace", {"name": "base", "type": "float"}),
+                10.0,
+            )
+
+    def test_loss_and_range_references_use_metadata_compatible_overloads(self):
+        class FakeAten:
+            binary_cross_entropy = Mock()
+            huber_loss = Mock()
+            linspace = Mock()
+            logspace = Mock()
+
+        class FakeOps:
+            aten = FakeAten()
+
+        class FakeTorch:
+            ops = FakeOps()
+
+        torch = FakeTorch()
+        self.assertIs(_reference_function(torch, "binary_cross_entropy"), FakeAten.binary_cross_entropy.default)
+        self.assertIs(_reference_function(torch, "huber_loss"), FakeAten.huber_loss.default)
+        self.assertIs(_reference_function(torch, "linspace"), FakeAten.linspace.Tensor_Scalar)
+        self.assertIs(_reference_function(torch, "logspace"), FakeAten.logspace.Tensor_Scalar)
+        self.assertIn("linspace", _harness_module._CPU_VALIDATION_ONLY_OPS)
+        self.assertIn("logspace", _harness_module._CPU_VALIDATION_ONLY_OPS)
+
+    def test_range_end_is_converted_to_python_scalar_for_tensor_start_overload(self):
+        class FakeTensor:
+            device = "cuda"
+
+            def __init__(self, value):
+                self.value = value
+
+            def item(self):
+                return self.value
+
+        related, note = _relate_inputs(
+            Mock(),
+            "linspace",
+            [{"name": "start"}, {"name": "end"}, {"name": "steps"}],
+            [FakeTensor(-1.0), FakeTensor(1.0), 4096],
+            "cuda",
+            "float16",
+        )
+
+        self.assertEqual(related[1], 1.0)
+        self.assertIn("end converted", note)
+
+    def test_masked_select_uses_an_all_true_mask_for_stable_output_storage(self):
+        with patch.object(_harness_module, "_DEFAULT_SHAPE", [1, 4096]):
+            recipe = recipe_for_tensor(
+                "masked_select",
+                "mask",
+                tensor_index=1,
+                default_dtype="float16",
+            )
+
+        self.assertEqual(recipe["kind"], "all_true")
+        self.assertEqual(recipe["dtype"], "bool")
+
+        class FakeTensor:
+            def __init__(self, shape, dtype, device):
+                self.shape = shape
+                self.dtype = dtype
+                self.device = device
+
+        class FakeTorch:
+            bool = "bool"
+
+            @staticmethod
+            def ones(shape, dtype, device):
+                return FakeTensor(shape, dtype, device)
+
+        mask = _make_tensor(FakeTorch(), recipe, "cuda")
+        self.assertEqual(mask.shape, [1, 4096])
+        self.assertEqual(mask.dtype, "bool")
+
+    def test_category_exclusion_defaults_to_none_and_supports_special(self):
+        self.assertEqual(
+            build_parser().parse_args(["--metadata", "x"]).exclude_categories,
+            "none",
+        )
+        args = build_parser().parse_args(
+            ["--metadata", "x", "--exclude-categories", "special"]
+        )
+        self.assertEqual(args.exclude_categories, "special")
+
+    def test_fp32_only_special_ops_are_skipped_for_low_precision_dtypes(self):
+        schemas = [
+            {"name": "abs"},
+            {"name": "fft_fft"},
+            {"name": "fft_hfft"},
+            {"name": "linalg_svd"},
+            {"name": "special_zeta"},
+        ]
+
+        for dtype in ("float16", "bfloat16"):
+            with self.subTest(dtype=dtype):
+                selected, excluded = select_dtype_supported_schemas(
+                    schemas,
+                    dtype=dtype,
+                )
+                self.assertEqual([schema["name"] for schema in selected], ["abs"])
+                self.assertEqual(
+                    [schema["name"] for schema in excluded],
+                    ["fft_fft", "fft_hfft", "linalg_svd", "special_zeta"],
+                )
+
+        selected, excluded = select_dtype_supported_schemas(
+            schemas,
+            dtype="float32",
+        )
+        self.assertEqual(len(selected), 5)
+        self.assertEqual(excluded, [])
+        self.assertEqual(len(_harness_module._FP32_ONLY_SPECIAL_OPS), 53)
+        self.assertEqual(len(_harness_module._FP32_ONLY_LOW_PRECISION_OPS), 69)
+        self.assertEqual(len(_harness_module._FP32_ONLY_OPS), 122)
+
+    def test_low_precision_dtype_exclusions_are_recorded_in_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = root / "torch_ops_metadata.json"
+            output = root / "output"
+            metadata.write_text(
+                json.dumps({"ops": [{"name": "special_zeta"}]}),
+                encoding="utf-8",
+            )
+
+            args = build_parser().parse_args(
+                [
+                    "--metadata",
+                    str(metadata),
+                    "--output-dir",
+                    str(output),
+                    "--dtype",
+                    "float16",
+                ]
+            )
+            self.assertEqual(run_parent(args), 0)
+            payload = json.loads(
+                (output / "excluded-operators.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(payload["dtype"], "float16")
+        self.assertEqual(payload["dtype_excluded_count"], 1)
+        self.assertEqual(
+            payload["dtype_excluded_operators"],
+            ["special_zeta"],
+        )
+
+    def test_reference_failure_falls_back_to_infini_only_special_function(self):
+        class FakeTensor:
+            dtype = "bfloat16"
+            shape = [2, 4]
+
+            def clone(self):
+                return self
+
+        class FakeTorch:
+            Tensor = FakeTensor
+            bfloat16 = "bfloat16"
+            float16 = "float16"
+            float32 = "float32"
+            float64 = "float64"
+
+            @staticmethod
+            def broadcast_shapes(*shapes):
+                return list(shapes[0])
+
+            @staticmethod
+            def empty(shape, dtype, device):
+                return FakeTensor()
+
+        class FakeOps:
+            def special_bessel_y1(self, *args, implementation_index):
+                self.args = args
+                self.implementation_index = implementation_index
+
+        schema = {
+            "name": "special_bessel_y1",
+            "aten_name": "special_bessel_y1",
+            "params": [
+                {"name": "x", "is_tensor": True, "is_out": False},
+                {"name": "out", "is_tensor": True, "is_out": True},
+            ],
+        }
+        result = {
+            "status": "worker_error",
+            "infini_us": None,
+            "ref_us": None,
+            "speedup": None,
+            "ref_mode": "functional",
+            "validation_mode": "exact",
+            "reference_error": "",
+            "error": "",
+        }
+        fake_ops = FakeOps()
+
+        with patch.object(_harness_module, "_measure_us", return_value=12.5):
+            handled = _try_infini_only_reference_fallback(
+                torch=FakeTorch(),
+                infini_ops=fake_ops,
+                schema=schema,
+                result=result,
+                inputs=[FakeTensor()],
+                device="cpu",
+                min_run_time=0.02,
+                benchmark_iterations=1,
+                implementation_index=3,
+                reference_error="RuntimeError: dtype is unsupported",
+            )
+
+        self.assertTrue(handled)
+        self.assertTrue(_supports_infini_only_reference_fallback(schema))
+        self.assertFalse(
+            _supports_infini_only_reference_fallback(
+                {**schema, "name": "fft_fft", "aten_name": "fft_fft"}
+            )
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["infini_us"], 12.5)
+        self.assertIsNone(result["ref_us"])
+        self.assertEqual(result["ref_mode"], "unavailable")
+        self.assertEqual(result["validation_mode"], "infini_only")
+        self.assertIn("dtype is unsupported", result["reference_error"])
+        self.assertEqual(fake_ops.implementation_index, 3)
+
     def test_fixed_tensor_recipes_cover_matrix_index_and_domains(self):
         self.assertEqual(
             recipe_for_tensor("mm", "self", 0),
@@ -123,6 +447,39 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
         self.assertEqual(
             recipe_for_tensor("avg_pool2d", "input", 0)["shape"],
             [2, 8, 16, 16],
+        )
+
+    def test_diff_elu_backward_and_fractional_pool_scalar_contracts(self):
+        self.assertEqual(scalar_value("diff", {"name": "n", "type": "int"}), 1)
+        self.assertEqual(scalar_value("diff", {"name": "dim", "type": "int"}), -1)
+        self.assertEqual(
+            scalar_value("elu_backward", {"name": "alpha", "type": "Scalar"}),
+            1.0,
+        )
+        self.assertEqual(
+            scalar_value(
+                "fractional_max_pool2d",
+                {"name": "kernel_size", "type": "int[2]"},
+            ),
+            [2, 2],
+        )
+        self.assertEqual(
+            recipe_for_tensor("fractional_max_pool2d", "random_samples", 1),
+            {"shape": [2, 8, 2], "dtype": "float16", "kind": "probability"},
+        )
+        self.assertEqual(
+            recipe_for_tensor("fractional_max_pool3d", "random_samples", 1)["shape"],
+            [2, 4, 3],
+        )
+
+    def test_sparse_gemm_and_pinv_use_compatible_tensor_shapes(self):
+        self.assertEqual(
+            [recipe_for_tensor("sspaddmm", name, index)["shape"] for index, name in enumerate(("input", "mat1", "mat2"))],
+            [[8, 16], [8, 128], [128, 16]],
+        )
+        self.assertEqual(
+            recipe_for_tensor("linalg_pinv", "input", 0)["kind"],
+            "positive_definite",
         )
 
     def test_semantic_tensor_recipes_cover_condition_rank_and_square_matrices(self):
@@ -299,9 +656,34 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
             min_run_time=0.05,
         )
 
-        self.assertEqual(command[-2:], ["--min-run-time", "0.05"])
+        min_run_index = command.index("--min-run-time")
+        self.assertEqual(command[min_run_index:min_run_index + 2], ["--min-run-time", "0.05"])
+        self.assertIn("--benchmark-iterations", command)
+        iterations_index = command.index("--benchmark-iterations")
+        self.assertEqual(
+            command[iterations_index:iterations_index + 2],
+            ["--benchmark-iterations", "0"],
+        )
         start = command.index("--worker-op")
         self.assertEqual(command[start : start + 2], ["--worker-op", "abs"])
+
+    def test_worker_command_can_request_fixed_iterations(self):
+        command = build_worker_command(
+            python="/usr/bin/python3.12",
+            script="/workspace/benchmark_infiniops_full.py",
+            metadata="/workspace/torch_ops_metadata.json",
+            op_name="abs",
+            device="cuda",
+            dtype="float16",
+            min_run_time=0.02,
+            benchmark_iterations=1,
+        )
+
+        iterations_index = command.index("--benchmark-iterations")
+        self.assertEqual(
+            command[iterations_index:iterations_index + 2],
+            ["--benchmark-iterations", "1"],
+        )
 
     def test_worker_batch_command_groups_ops_in_one_process(self):
         command = build_worker_batch_command(
@@ -317,6 +699,48 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
         start = command.index("--worker-ops")
         self.assertEqual(command[start : start + 2], ["--worker-ops", "abs,add"])
         self.assertNotIn("--worker-op", command)
+        self.assertIn("--benchmark-iterations", command)
+
+    def test_fixed_iterations_use_benchmark_timer_timeit(self):
+        class Measurement:
+            def __init__(self, raw_seconds, number_per_run=1):
+                self.raw_times = [raw_seconds]
+                self.number_per_run = number_per_run
+                self.median = raw_seconds / number_per_run
+
+        class Timer:
+            calls = []
+
+            def __init__(self, stmt, globals):
+                self.stmt = stmt
+                self.globals = globals
+
+            def timeit(self, number):
+                Timer.calls.append(("timeit", {"number": number}))
+                return Measurement(0.000012, number)
+
+            def blocked_autorange(self, min_run_time):
+                Timer.calls.append(
+                    ("blocked_autorange", {"min_run_time": min_run_time})
+                )
+                return Measurement(0.000012)
+
+        class Benchmark:
+            pass
+
+        Benchmark.Timer = Timer
+
+        torch = Mock()
+        torch.utils.benchmark = Benchmark()
+        latency_us = _measure_us(
+            torch, lambda: None, 0.02, "cuda", benchmark_iterations=1
+        )
+
+        self.assertEqual(latency_us, 12.0)
+        self.assertEqual(
+            Timer.calls,
+            [("timeit", {"number": 1})],
+        )
 
     def test_reference_keyword_only_parameters_are_not_passed_positionally(self):
         params = [
@@ -401,6 +825,171 @@ class FullOperatorBenchmarkTests(unittest.TestCase):
             [param["keyword_only"] for param in annotated],
             [False, False, False, True],
         )
+
+    def test_aten_reference_arguments_are_reordered_by_parameter_name(self):
+        class Argument:
+            def __init__(self, name, aten_type, keyword_only=False):
+                self.name = name
+                self.type = aten_type
+                self.kwarg_only = keyword_only
+
+        class Schema:
+            arguments = [
+                Argument("grad_output", "Tensor"),
+                Argument("alpha", "Scalar"),
+                Argument("self_or_result", "Tensor"),
+            ]
+
+        class Overload:
+            _schema = Schema()
+
+        class Packet:
+            default = Overload()
+
+            @staticmethod
+            def overloads():
+                return ["default"]
+
+        class Torch:
+            class ops:
+                class aten:
+                    elu_backward = Packet()
+
+        params = [
+            {"name": "grad_output", "type": "Tensor"},
+            {"name": "self_or_result", "type": "Tensor"},
+            {"name": "alpha", "type": "Scalar"},
+        ]
+
+        _, reference_params = _resolve_aten_reference(
+            Torch(),
+            "elu_backward",
+            params,
+        )
+        values_by_name = {
+            "grad_output": "grad",
+            "self_or_result": "self",
+            "alpha": 1.0,
+        }
+        reference_inputs = [
+            values_by_name[param["name"]] for param in reference_params
+        ]
+        positional, keyword = split_reference_arguments(
+            reference_params,
+            reference_inputs,
+        )
+
+        self.assertEqual(
+            [param["name"] for param in reference_params],
+            ["grad_output", "alpha", "self_or_result"],
+        )
+        self.assertEqual(positional, ["grad", 1.0, "self"])
+        self.assertEqual(keyword, {})
+
+    def test_aten_reference_uses_selected_overload_not_last_candidate(self):
+        class Argument:
+            def __init__(self, name, aten_type, keyword_only=False):
+                self.name = name
+                self.type = aten_type
+                self.kwarg_only = keyword_only
+
+        class Schema:
+            def __init__(self, arguments):
+                self.arguments = arguments
+
+        class Overload:
+            def __init__(self, arguments):
+                self._schema = Schema(arguments)
+
+        class Packet:
+            src = Overload(
+                [
+                    Argument("self", "Tensor"),
+                    Argument("dim", "int"),
+                    Argument("index", "Tensor"),
+                    Argument("src", "Tensor"),
+                ]
+            )
+            optional = Overload(
+                [
+                    Argument("self", "Tensor"),
+                    Argument("dim", "int"),
+                    Argument("index", "Tensor"),
+                    Argument("generator", "Optional[Generator]"),
+                ]
+            )
+
+            @staticmethod
+            def overloads():
+                return ["src", "optional"]
+
+        class Torch:
+            class ops:
+                class aten:
+                    scatter = Packet()
+
+        params = [
+            {"name": "input", "type": "Tensor"},
+            {"name": "index", "type": "Tensor"},
+            {"name": "src", "type": "Tensor"},
+            {"name": "dim", "type": "int"},
+        ]
+
+        overload, reference_params = _resolve_aten_reference(
+            Torch(),
+            "scatter",
+            params,
+        )
+
+        self.assertIs(overload, Packet.src)
+        self.assertEqual(
+            [param["name"] for param in reference_params],
+            ["input", "dim", "index", "src"],
+        )
+
+    def test_index_family_inputs_use_a_shared_dimension_and_bounds(self):
+        class FakeTensor:
+            dtype = "float32"
+            device = "cuda"
+
+            def __init__(self, shape, tag=None):
+                self.shape = shape
+                self.tag = tag
+
+        class FakeTorch:
+            int64 = "int64"
+
+            @staticmethod
+            def randint(low, high, shape, dtype, device):
+                return FakeTensor(shape, f"index:{low}:{high}:{dtype}")
+
+            @staticmethod
+            def randn(shape, dtype, device):
+                return FakeTensor(shape, f"source:{dtype}")
+
+        params = [
+            {"name": "input"},
+            {"name": "index"},
+            {"name": "source"},
+            {"name": "dim"},
+        ]
+        inputs = [FakeTensor([8, 128]), "bad-index", "bad-source", "bad-dim"]
+
+        related, note = _relate_inputs(
+            FakeTorch(),
+            "index_add",
+            params,
+            inputs,
+            "cuda",
+            "float32",
+        )
+
+        self.assertEqual(related[0].shape, [8, 128])
+        self.assertEqual(related[1].shape, [4])
+        self.assertEqual(related[1].tag, "index:0:128:int64")
+        self.assertEqual(related[2].shape, [8, 4])
+        self.assertEqual(related[3], 1)
+        self.assertIn("dim=1", note)
 
     def test_parse_worker_stdout_uses_last_result_record(self):
         stdout = "warning from vendor\n" + json.dumps(

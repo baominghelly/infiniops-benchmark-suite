@@ -119,6 +119,30 @@ class ExportFullOperatorReportTests(unittest.TestCase):
 
                 self.assertIn(f"implementation={platform}-native", row["remarks"])
 
+    def test_platform_row_exports_infini_only_latency_without_reference(self):
+        row = platform_row(
+            {
+                "op": "special_bessel_y1",
+                "dtype": "bfloat16",
+                "input_recipe": "x=bfloat16[1x4096]:normal",
+                "infini_us": 10.0,
+                "ref_us": None,
+                "ref_mode": "unavailable",
+                "validation_mode": "infini_only",
+                "implementation_index": 0,
+                "active_implementation_indices": [0],
+            },
+            platform="metax",
+            run_date="2026/09/22",
+            tester="baoming",
+        )
+
+        self.assertEqual(row["ic_latency_us"], "10.00")
+        self.assertEqual(row["pt_latency_us"], "NA")
+        self.assertEqual(row["pt_tflops"], "NA")
+        self.assertIn("reference=unavailable", row["remarks"])
+        self.assertIn("validation=infini_only", row["remarks"])
+
     def test_platform_row_maps_nine_semantic_category_codes(self):
         expected = {
             "abs": "math",
@@ -172,11 +196,22 @@ class ExportFullOperatorReportTests(unittest.TestCase):
             "error": "mismatch",
             "benchmark_profile": "decode-4k",
         }
+        infini_only = {
+            **success,
+            "op": "special_bessel_y1",
+            "category_code": "special",
+            "ref_us": None,
+            "ref_mode": "unavailable",
+            "validation_mode": "infini_only",
+        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "results.json"
             source.write_text(
-                json.dumps({"results": [success, dict(success), failure]}), encoding="utf-8"
+                json.dumps(
+                    {"results": [success, dict(success), infini_only, failure]}
+                ),
+                encoding="utf-8",
             )
             output = root / "benchmark.csv"
             diagnostics = root / "diagnostics.csv"
@@ -207,8 +242,9 @@ class ExportFullOperatorReportTests(unittest.TestCase):
                 diagnostic_rows = list(csv.DictReader(handle))
                 self.assertEqual(handle.seek(0), 0)
                 self.assertEqual(next(csv.reader(handle)), DIAGNOSTIC_FIELDS)
-            self.assertEqual(len(success_rows), 1)
+            self.assertEqual(len(success_rows), 2)
             self.assertEqual(success_rows[0]["category_code"], "math")
+            self.assertEqual(success_rows[1]["pt_latency_us"], "NA")
             self.assertEqual(
                 success_rows[0]["infiniops_commit"],
                 "3333333333333333333333333333333333333333",
@@ -218,7 +254,9 @@ class ExportFullOperatorReportTests(unittest.TestCase):
                 "4444444444444444444444444444444444444444",
             )
             self.assertEqual(len(diagnostic_rows), 1)
-            self.assertIn("Successful comparable cases: 1", report.read_text(encoding="utf-8"))
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("Successful comparable cases: 1", report_text)
+            self.assertIn("Successful InfiniOps-only cases: 1", report_text)
 
 
 if __name__ == "__main__":

@@ -277,6 +277,12 @@ def write_report(
     implementation_counts = Counter(
         _implementation_kind(row, platform) for row in successes
     )
+    comparable = [
+        row for row in successes if row.get("validation_mode") != "infini_only"
+    ]
+    infini_only = [
+        row for row in successes if row.get("validation_mode") == "infini_only"
+    ]
     ratios = [
         float(row["ref_us"]) / float(row["infini_us"])
         for row in successes
@@ -286,7 +292,8 @@ def write_report(
         f"# InfiniOps {platform.title()} benchmark report",
         "",
         f"- Source result sets: {source_count}",
-        f"- Successful comparable cases: {len(successes)}",
+        f"- Successful comparable cases: {len(comparable)}",
+        f"- Successful InfiniOps-only cases: {len(infini_only)}",
         f"- Unique non-success cases: {len(failures)}",
         f"- Unique successful operators: {len({row.get('op') for row in successes})}",
         f"- Native implementation cases: {implementation_counts.get(f'{platform}-native', 0)}",
