@@ -79,13 +79,25 @@ On failure, the worker writes a `failure_policy` object:
 {
   "failure_code": "container_cuda_lost",
   "auto_retry": true,
-  "max_auto_retries": 3,
+  "max_attempts": 16,
+  "max_auto_retries": 16,
+  "retry_delay_base_seconds": 300,
+  "retry_delay_multiplier": 2.0,
+  "retry_delay_cap_seconds": 3600,
   "retry_delay_seconds": 300,
+  "retry_window_seconds": 72000,
   "recommended_action": "restart_benchmark_container_then_retry_without_rebuild",
   "preserve_partial_results": false,
   "allow_replace_existing_output": true
 }
 ```
+
+`max_attempts` is the total-attempt limit. A transient failure is retried
+after 5, 10, 20, 40, and then at most 60-minute intervals. A new attempt is
+started only within 20 hours after the global manifest was created, so retries
+do not spill into the next daily run; an already-running attempt is not killed
+by that window. `max_auto_retries` remains as a compatibility field for
+deployed workers that have not yet learned `max_attempts`.
 
 Known transient classes include container CUDA loss, benchmark-container
 down state, source-network failure, and GPU-busy rejection. Timeouts remain
@@ -122,7 +134,7 @@ The periodic launcher honors the same shared pause marker and will not launch a
 new worker while the system is paused. Remove only the MetaX cron entry with
 `crontab -e` on `metax49` if that platform must stop independently.
 
-## Daily five-platform pilot
+## Daily six-platform pilot
 
 The A100 daily launcher creates one immutable manifest for:
 
@@ -132,10 +144,21 @@ metax-c550
 ascend-910c
 moore-s5000
 iluvatar-tg150
+hygon-bw1100
 ```
 
 It uses `decode-4k`, all three dtypes, and the same frozen InfiniOps/InfiniRT
 commits for every platform. Moore defaults to shared-process validation because
 that machine hosts short model-test jobs; its latency is marked non-comparable.
-Ascend245 does not permit a user crontab, so A100 invokes its periodic worker
-over SSH every five minutes through `ops/periodic_ascend_remote.sh`.
+Ascend245 and both BW1100 nodes do not permit user crontabs, so A100 invokes
+their periodic workers over SSH every five minutes through
+`ops/periodic_ascend_remote.sh` and `ops/periodic_hygon_remote.sh`.
+
+Hygon BW1100 uses one logical daily platform (`hygon-bw1100`) and two physical
+nodes (`hygon-bw1100-01`/`dcu1` and `hygon-bw1100-02`/`dcu2`). Both nodes
+write to `ops/hygon-bw1100/<YYYYMMDD>/` and share the logical worker lease and
+heartbeat. The worker manifest records the node that owns each attempt. A
+healthy heartbeat makes the other node exit; a stale heartbeat or retryable
+failure allows either node to take the shared lock and resume checkpoints.
+Node 1 uses container `baoming_infiniops_hygon`; node 2 uses
+`baoming_infiniops_hygon_dcu2`. Both pin `HYGON_ARCH=gfx938`.

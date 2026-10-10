@@ -111,10 +111,22 @@ The A100 crontab entry runs at 18:00 UTC, equal to 02:00 Beijing time:
 0 18 * * * /data-aisoft/baoming/infinibench-ops/scheduled_daily.sh >> /data-aisoft/baoming/infinibench-ops/logs/daily.log 2>&1
 ```
 
-It creates one global manifest for that Beijing date, then launches NVIDIA and
-MetaX workers. Results are written under:
+It creates one global manifest for that Beijing date, then launches the
+NVIDIA, MetaX, Ascend, Moore, Iluvatar, and the logical Hygon BW1100 worker.
+Results are written under:
 
 ```text
 /data-aisoft/infinibench_data/ops/nvidia-a100/<YYYYMMDD>/
 /data-aisoft/infinibench_data/ops/metax-c550/<YYYYMMDD>/
+/data-aisoft/infinibench_data/ops/ascend-910c/<YYYYMMDD>/
+/data-aisoft/infinibench_data/ops/moore-s5000/<YYYYMMDD>/
+/data-aisoft/infinibench_data/ops/iluvatar-tg150/<YYYYMMDD>/
+/data-aisoft/infinibench_data/ops/hygon-bw1100/<YYYYMMDD>/
 ```
+
+The Hygon daily platform is registered as `hygon-bw1100`; its two physical
+nodes are `hygon-bw1100-01` (`hygon251`) and `hygon-bw1100-02` (`hygon252`).
+Like Ascend, its five-minute takeover job runs on the A100 host through
+`periodic_hygon_remote.sh` because both Hygon hosts disallow user crontabs.
+The nodes share the logical result directory, worker lease, and heartbeat;
+only the actual execution node is recorded in the worker manifest.
