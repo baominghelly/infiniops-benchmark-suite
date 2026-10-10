@@ -19,3 +19,6 @@ dist/
 # Benchmark outputs
 results/
 *.log
+
+# Local backup snapshots
+.backups/
